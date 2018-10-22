@@ -1,0 +1,9 @@
+# python==3.6.1
+
+-e git+git@github.com:openai/baselines.git@34ae3194b4a15c57a8e5f2ae4d70191703a68f5a#egg=baselines
+-e git+git@github.com:lilianweng/datasets.git@021da8aa51a3741ea56ed84e9e110f3ff2a273f9#egg=tensorflow_datasets
+
+click
+nltk
+numpy
+tensorflow==1.9.0
