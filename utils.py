@@ -12,7 +12,7 @@ class BaseModelMixin:
     with some modifications.
     """
 
-    def __init__(self, model_name, saver_max_to_keep=5):
+    def __init__(self, model_name, saver_max_to_keep=5, tf_sess_config=None):
         print("Model name:", model_name)
 
         self._saver = None
@@ -20,6 +20,14 @@ class BaseModelMixin:
         self._writer = None
         self._model_name = model_name
         self._sess = None
+
+        if tf_sess_config is None:
+            tf_sess_config = {
+                'allow_soft_placement': True,
+                'intra_op_parallelism_threads': 8,
+                'inter_op_parallelism_threads': 4,
+            }
+        self.tf_sess_config = tf_sess_config
 
     def scope_vars(self, scope):
         res = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)
@@ -51,17 +59,23 @@ class BaseModelMixin:
             print(colorize(" [!] Load FAILED: %s" % self.checkpoint_dir, "red"))
             return False
 
+    def _get_dir(self, dir_name):
+        path = os.path.join(REPO_ROOT, dir_name, self.model_name)
+        os.makedirs(path, exist_ok=True)
+        return path
+
     @property
     def log_dir(self):
-        log_path = os.path.join(REPO_ROOT, 'logs', self.model_name)
-        os.makedirs(log_path, exist_ok=True)
-        return log_path
+        return self._get_dir('logs')
 
     @property
     def checkpoint_dir(self):
-        ckpt_path = os.path.join(REPO_ROOT, 'checkpoints', self.model_name)
-        os.makedirs(ckpt_path, exist_ok=True)
-        return ckpt_path
+        return self._get_dir('checkpoints')
+
+    @property
+    def tb_dir(self):
+        # tensorboard
+        return self._get_dir('tb')
 
     @property
     def model_name(self):
@@ -77,19 +91,13 @@ class BaseModelMixin:
     @property
     def writer(self):
         if self._writer is None:
-            os.makedirs(self.log_dir, exist_ok=True)
-            self._writer = tf.summary.FileWriter(self.log_dir, self.sess.graph)
+            self._writer = tf.summary.FileWriter(self.tb_dir, self.sess.graph)
         return self._writer
 
     @property
     def sess(self):
         if self._sess is None:
-            tf_sess_configs = {
-                'allow_soft_placement': True,
-                'intra_op_parallelism_threads': 8,
-                'inter_op_parallelism_threads': 4,
-            }
-            config = tf.ConfigProto(**tf_sess_configs)
+            config = tf.ConfigProto(**self.tf_sess_config)
             self._sess = tf.Session(config=config)
 
         return self._sess

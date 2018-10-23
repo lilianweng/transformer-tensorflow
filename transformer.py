@@ -1,3 +1,11 @@
+"""
+Check my blog post on attention and transformer:
+    https://lilianweng.github.io/lil-log/2018/06/24/attention-attention.html
+
+Implementations that helped me:
+    https://github.com/Kyubyong/transformer/
+    https://github.com/tensorflow/tensor2tensor/blob/master/tensor2tensor/models/transformer.py
+"""
 import numpy as np
 import tensorflow as tf
 
@@ -9,21 +17,16 @@ from baselines.common.tf_util import display_var_info
 class Transformer(BaseModelMixin):
     """
     See the architecture spec of Transformer in:
-
         Vaswani et al. Attention is All You Need. NIPS 2017.
-
-    Also check my blog post on attention:
-
-        https://lilianweng.github.io/lil-log/2018/06/24/attention-attention.html
 
     """
 
     def __init__(self, num_heads=8, d_model=512, d_ff=2048,
                  num_enc_layers=6, num_dec_layers=6,
                  drop_rate=0.1, use_label_smoothing=True, ls_epsilon=0.1,
-                 model_name='transformer'):
+                 model_name='transformer', tf_sess_config=None):
         assert d_model % num_heads == 0
-        super().__init__(model_name)
+        super().__init__(model_name, tf_sess_config=tf_sess_config)
 
         self.h = num_heads
         self.d_model = d_model
@@ -207,8 +210,6 @@ class Transformer(BaseModelMixin):
         return out
 
     def decoder_layer(self, inp, enc_out, scope):
-        inp_size = inp.shape.as_list()[1]
-
         with tf.variable_scope(scope):
             out = self.layer_norm(inp + self.multihead_attention(
                 inp, masked=True, scope='self_attn'))
@@ -270,7 +271,7 @@ class Transformer(BaseModelMixin):
 
             logits = tf.layers.dense(dec_out, target_vocab)  # [batch, target_vocab]
             probas = tf.nn.softmax(logits)
-            self._output = tf.argmax(probas, axis=-1)
+            self._output = tf.argmax(probas, axis=-1, output_type=tf.int32)
             print(logits.shape, probas.shape, self._output.shape)
             self.probas = probas
             self._loss = tf.reduce_mean(
@@ -292,16 +293,25 @@ class Transformer(BaseModelMixin):
         return {'loss': train_loss}
 
     def predict(self, input_ids):
-        return self.sess.run(self._output, feed_dict={
-            self.input_ph: input_ids.astype(np.int32),
-            self.target_ph: None,
-        })
+        batch_size, seq_len = self.input_ph.shape.as_list()
+        assert input_ids.shape == (batch_size, seq_len)
+        input_ids = input_ids.astype(np.int32)
+        pred_ids = np.zeros((batch_size, seq_len), dtype=np.int32)
 
-    def evaluate(self, test_input_ids, test_target_ids):
-        test_loss, test_output = self.sess.run([self.loss, self._output], feed_dict={
-            self.input_ph: test_input_ids.astype(np.int32),
-            self.target_ph: test_target_ids.astype(np.int32),
-        })
+        # Predict one output a time autoregressively.
+        for i in range(seq_len):
+            next_pred = self.sess.run(self._output, feed_dict={
+                self.input_ph: input_ids,
+                self.target_ph: pred_ids,
+            })
+            # Only update the i-th column in one step.
+            pred_ids[: i] = next_pred[: i]
+
+        return pred_ids
+
+    def evaluate(self, input_ids, target_ids):
+        bleu_scores = []
+        smoothie = SmoothingFunction().method4
 
         def remove_tailing_empty(words):
             i = len(words) - 1
@@ -309,11 +319,11 @@ class Transformer(BaseModelMixin):
                 i -= 1
             return words[:i + 1]
 
-        bleu_scores = []
-        smoothie = SmoothingFunction().method4
-        for truth_ids, pred_ids in zip(test_target_ids, test_output):
-            truth = list(map(lambda i: self._target_id2word.get(i, '<unk>'), truth_ids))
-            pred = list(map(lambda i: self._target_id2word.get(i, '<unk>'), pred_ids))
+        pred_ids = self.predict(input_ids)
+
+        for truth, pred in zip(target_ids, pred_ids):
+            truth = list(map(lambda i: self._target_id2word.get(i, '<unk>'), truth))
+            pred = list(map(lambda i: self._target_id2word.get(i, '<unk>'), pred))
 
             truth = remove_tailing_empty(truth)
             pred = remove_tailing_empty(pred)
@@ -322,15 +332,13 @@ class Transformer(BaseModelMixin):
             bleu_scores.append(bleu_score)
 
         # Print the last pair for fun.
-        inp_sent = list(map(lambda i: self._input_id2word.get(i, '<unk>'), test_input_ids[-1]))
-        inp_sent = remove_tailing_empty(inp_sent)
-
-        print("[Source]", ' '.join(inp_sent))
+        source = list(map(lambda i: self._input_id2word.get(i, '<unk>'), input_ids[-1]))
+        source = remove_tailing_empty(source)
+        print("[Source]", ' '.join(source))
         print("[Truth]", ' '.join(truth))
         print("[Translated]", ' '.join(pred))
 
-        return {'loss': test_loss,
-                'bleu_avg': np.mean(bleu_scores),
+        return {'bleu_avg': np.mean(bleu_scores),
                 'bleu_max': np.max(bleu_scores),
                 'bleu_median': np.median(bleu_scores)}
 

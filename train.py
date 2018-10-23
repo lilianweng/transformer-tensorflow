@@ -29,8 +29,19 @@ def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
         max_steps=max_steps,
     )
 
+    tf_sess_config = dict(
+        allow_soft_placement=True,
+        intra_op_parallelism_threads=8,
+        inter_op_parallelism_threads=4,
+    )
+
     model_name = f'transformer-seq{seq_len}-d{d_model}-head{n_head}-{int(time.time())}'
-    transformer = Transformer(num_heads=n_head, d_model=d_model, model_name=model_name)
+    transformer = Transformer(
+        num_heads=n_head,
+        d_model=d_model,
+        model_name=model_name,
+        tf_sess_config=tf_sess_config
+    )
     transformer.build_model(id2en, id2vi, **train_params)
     transformer.print_trainable_variables()
 
