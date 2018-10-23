@@ -5,6 +5,7 @@ Check my blog post on attention and transformer:
 Implementations that helped me:
     https://github.com/Kyubyong/transformer/
     https://github.com/tensorflow/tensor2tensor/blob/master/tensor2tensor/models/transformer.py
+    http://nlp.seas.harvard.edu/2018/04/01/attention.html
 """
 import numpy as np
 import tensorflow as tf
@@ -44,6 +45,7 @@ class Transformer(BaseModelMixin):
         self.use_label_smoothing = use_label_smoothing
 
         self._is_init = False
+        self.step = 0  # training step.
 
         # The following variables will be initialized in build_model().
         self._input_id2word = None
@@ -271,41 +273,64 @@ class Transformer(BaseModelMixin):
 
             logits = tf.layers.dense(dec_out, target_vocab)  # [batch, target_vocab]
             probas = tf.nn.softmax(logits)
+
+            self.probas = probas
             self._output = tf.argmax(probas, axis=-1, output_type=tf.int32)
             print(logits.shape, probas.shape, self._output.shape)
-            self.probas = probas
+
             self._loss = tf.reduce_mean(
                 tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=target))
 
             optim = tf.train.AdamOptimizer(learning_rate=lr)
             self._train_op = optim.minimize(self._loss)
 
+        with tf.variable_scope(self.model_name + '_summary'):
+            tf.summary.scalar('loss', self._loss)
+            self.merged_summary = tf.summary.merge_all()
+
     def init(self):
         self.sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
         self._is_init = True
+        self.step = 0
+
+    def done(self):
+        self.writer.close()
+        self.saver.save()  # Final checkpoint.
 
     def train(self, input_ids, target_ids):
         assert self._is_init, "Call .init() first."
-        train_loss, _ = self.sess.run([self.loss, self.train_op], feed_dict={
-            self.input_ph: input_ids.astype(np.int32),
-            self.target_ph: target_ids.astype(np.int32),
-        })
-        return {'loss': train_loss}
+        self.step += 1
+        train_loss, summary, _ = self.sess.run(
+            [self.loss, self.merged_summary, self.train_op], feed_dict={
+                self.input_ph: input_ids.astype(np.int32),
+                self.target_ph: target_ids.astype(np.int32),
+            })
+        self.writer.add_summary(summary, global_step=self.step)
+
+        if self.step % 1000 == 0:
+            # Save the model checkpoint every 1000 steps.
+            self.save_model(step=self.step)
+
+        return {'train_loss': train_loss, 'step': self.step}
 
     def predict(self, input_ids):
+        assert list(input_ids.shape) == self.input_ph.shape.as_list()
         batch_size, seq_len = self.input_ph.shape.as_list()
-        assert input_ids.shape == (batch_size, seq_len)
+
         input_ids = input_ids.astype(np.int32)
-        pred_ids = np.zeros((batch_size, seq_len), dtype=np.int32)
+        pred_ids = np.zeros(input_ids.shape, dtype=np.int32)
 
         # Predict one output a time autoregressively.
         for i in range(seq_len):
-            next_pred = self.sess.run(self._output, feed_dict={
-                self.input_ph: input_ids,
-                self.target_ph: pred_ids,
-            })
+            next_probas, next_pred = self.sess.run(
+                [self.probas, self._output], feed_dict={
+                    self.input_ph: input_ids,
+                    self.target_ph: pred_ids,
+                })
             # Only update the i-th column in one step.
             pred_ids[: i] = next_pred[: i]
+            #print(f"i={i}", next_probas)
+            #print(f"i={i}", pred_ids)
 
         return pred_ids
 

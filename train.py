@@ -45,31 +45,24 @@ def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
     transformer.build_model(id2en, id2vi, **train_params)
     transformer.print_trainable_variables()
 
+    test_data_iter = data_generator(batch_size, seq_len, data_dir=data_dir, file_prefix='tst2013')
     logger.configure(dir=transformer.log_dir, format_strs=['stdout', 'csv'])
 
-    step = 0
-    test_data_iter = data_generator(batch_size, seq_len, data_dir=data_dir, file_prefix='tst2013')
-
-    transformer.init()
-    while step < max_steps:
+    transformer.init()  # step = 0
+    while transformer.step < max_steps:
         for input_ids, target_ids in data_generator(batch_size, seq_len, data_dir=data_dir):
-            step += 1
-            logger.logkv('step', step)
-
             meta = transformer.train(input_ids, target_ids)
             for k, v in meta.items():
-                logger.logkv('train_' + k, v)
+                logger.logkv(k, v)
 
-            if step % 100 == 0:
+            if transformer.step % 100 == 0:
                 test_inp_ids, test_target_ids = next(test_data_iter)
                 meta = transformer.evaluate(test_inp_ids, test_target_ids)
                 for k, v in meta.items():
                     logger.logkv('test_' + k, v)
                 logger.dumpkvs()
 
-            if step % 1000 == 0:
-                # Save the model checkpoint.
-                transformer.save_model(step=step)
+    transformer.done()
 
 
 if __name__ == '__main__':
