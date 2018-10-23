@@ -2,8 +2,7 @@ import numpy as np
 import tensorflow as tf
 
 from utils import BaseModelMixin
-from nltk.translate.bleu_score import sentence_bleu
-from data import UNKNOWN_ID
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from baselines.common.tf_util import display_var_info
 
 
@@ -266,7 +265,7 @@ class Transformer(BaseModelMixin):
             probas = tf.nn.softmax(logits)
             self._output = tf.argmax(probas, axis=-1)
             print(logits.shape, probas.shape, self._output.shape)
-
+            self.probas = probas
             self._loss = tf.reduce_mean(
                 tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=target))
 
@@ -296,15 +295,31 @@ class Transformer(BaseModelMixin):
             self.input_ph: test_input_ids.astype(np.int32),
             self.target_ph: test_target_ids.astype(np.int32),
         })
+
+        def remove_tailing_empty(words):
+            i = len(words) - 1
+            while i >= 0 and words[i] == '<empty>':
+                i -= 1
+            return words[:i + 1]
+
         bleu_scores = []
+        smoothie = SmoothingFunction().method4
         for truth_ids, pred_ids in zip(test_target_ids, test_output):
-            truth = list(map(lambda i: self._input_id2word.get(i, '<unk>'), truth_ids))
+            truth = list(map(lambda i: self._target_id2word.get(i, '<unk>'), truth_ids))
             pred = list(map(lambda i: self._target_id2word.get(i, '<unk>'), pred_ids))
-            print(truth, pred)
-            bleu_score = sentence_bleu(truth, pred)
+
+            truth = remove_tailing_empty(truth)
+            pred = remove_tailing_empty(pred)
+
+            bleu_score = sentence_bleu([truth], pred, smoothing_function=smoothie)
             bleu_scores.append(bleu_score)
 
-        return {'loss': test_loss, 'bleu': np.mean(bleu_scores)}
+        print("Last pair:", truth, pred)
+        print("Bleu scores:", bleu_scores)
+
+        return {'loss': test_loss,
+                'avg_bleu': np.mean(bleu_scores),
+                'max_bleu': np.max(bleu_scores)}
 
     # ============================= Utils ===============================
 

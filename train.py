@@ -1,5 +1,4 @@
 import click
-import json
 from baselines import logger
 from data import *
 from transformer import *
@@ -27,7 +26,7 @@ def train(seq_len=20, batch_size=64, max_steps=100000):
     )
 
     transformer = Transformer(num_heads=4, d_model=128)
-    transformer.build_model(id2en, vi2id, **train_params)
+    transformer.build_model(id2en, id2vi, **train_params)
     transformer.print_trainable_variables()
 
     step = 0
@@ -36,17 +35,18 @@ def train(seq_len=20, batch_size=64, max_steps=100000):
     transformer.init()
     while step < max_steps:
         for input_ids, target_ids in data_generator(batch_size, seq_len, data_dir=data_dir):
-            meta = transformer.train(input_ids, target_ids)
             step += 1
-
             logger.logkv('step', step)
-            logger.logkv('train_loss', meta['loss'])
 
-            if step % 10 == 0:
+            meta = transformer.train(input_ids, target_ids)
+            for k, v in meta.items():
+                logger.logkv('train_' + k, v)
+
+            if step % 100 == 0:
                 test_inp_ids, test_target_ids = next(test_data_iter)
                 meta = transformer.evaluate(test_inp_ids, test_target_ids)
-                logger.logkv('test_loss', meta['loss'])
-                logger.logkv('test_bleu', meta['bleu'])
+                for k, v in meta.items():
+                    logger.logkv('test_' + k, v)
                 logger.dumpkvs()
 
 
