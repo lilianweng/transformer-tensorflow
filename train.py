@@ -1,14 +1,18 @@
 import click
+import time
+
 from baselines import logger
 from data import *
 from transformer import *
 
 
 @click.command()
-@click.option('--seq-len', type=int, default=20, help="Input sequence length.")
-@click.option('--batch-size', type=int, default=64, help="Max training steps.")
-@click.option('--max-steps', type=int, default=100000, help="Max training steps.")
-def train(seq_len=20, batch_size=64, max_steps=100000):
+@click.option('--seq-len', type=int, default=100, show_default=True, help="Input sequence length.")
+@click.option('--d-model', type=int, default=512, show_default=True, help="d_model")
+@click.option('--n-head', type=int, default=8, show_default=True, help="n_head")
+@click.option('--batch-size', type=int, default=64, show_default=True, help="Batch size")
+@click.option('--max-steps', type=int, default=100000, show_default=True, help="Max train steps.")
+def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
     data_dir = '/tmp/iwslt15/'
     maybe_download_data_files(data_dir)
 
@@ -25,9 +29,12 @@ def train(seq_len=20, batch_size=64, max_steps=100000):
         max_steps=max_steps,
     )
 
-    transformer = Transformer(num_heads=4, d_model=128)
+    model_name = f'transformer-seq{seq_len}-d{d_model}-head{n_head}-{int(time.time())}'
+    transformer = Transformer(num_heads=n_head, d_model=d_model, model_name=model_name)
     transformer.build_model(id2en, id2vi, **train_params)
     transformer.print_trainable_variables()
+
+    logger.configure(dir=transformer.log_dir, format_strs=['stdout', 'csv'])
 
     step = 0
     test_data_iter = data_generator(batch_size, seq_len, data_dir=data_dir, file_prefix='tst2013')
@@ -48,6 +55,10 @@ def train(seq_len=20, batch_size=64, max_steps=100000):
                 for k, v in meta.items():
                     logger.logkv('test_' + k, v)
                 logger.dumpkvs()
+
+            if step % 1000 == 0:
+                # Save the model checkpoint.
+                transformer.save_model(step=step)
 
 
 if __name__ == '__main__':

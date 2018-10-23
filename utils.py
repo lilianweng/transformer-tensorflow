@@ -13,6 +13,8 @@ class BaseModelMixin:
     """
 
     def __init__(self, model_name, saver_max_to_keep=5):
+        print("Model name:", model_name)
+
         self._saver = None
         self._saver_max_to_keep = saver_max_to_keep
         self._writer = None
@@ -50,6 +52,12 @@ class BaseModelMixin:
             return False
 
     @property
+    def log_dir(self):
+        log_path = os.path.join(REPO_ROOT, 'logs', self.model_name)
+        os.makedirs(log_path, exist_ok=True)
+        return log_path
+
+    @property
     def checkpoint_dir(self):
         ckpt_path = os.path.join(REPO_ROOT, 'checkpoints', self.model_name)
         os.makedirs(ckpt_path, exist_ok=True)
@@ -69,9 +77,8 @@ class BaseModelMixin:
     @property
     def writer(self):
         if self._writer is None:
-            writer_path = os.path.join(REPO_ROOT, "logs", self.model_name)
-            os.makedirs(writer_path, exist_ok=True)
-            self._writer = tf.summary.FileWriter(writer_path, self.sess.graph)
+            os.makedirs(self.log_dir, exist_ok=True)
+            self._writer = tf.summary.FileWriter(self.log_dir, self.sess.graph)
         return self._writer
 
     @property
@@ -79,7 +86,6 @@ class BaseModelMixin:
         if self._sess is None:
             tf_sess_configs = {
                 'allow_soft_placement': True,
-                'log_device_placement': False,
                 'intra_op_parallelism_threads': 8,
                 'inter_op_parallelism_threads': 4,
             }

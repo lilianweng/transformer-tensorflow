@@ -8,7 +8,14 @@ from baselines.common.tf_util import display_var_info
 
 class Transformer(BaseModelMixin):
     """
-    Transformer (Attention is All You Need).
+    See the architecture spec of Transformer in:
+
+        Vaswani et al. Attention is All You Need. NIPS 2017.
+
+    Also check my blog post on attention:
+
+        https://lilianweng.github.io/lil-log/2018/06/24/attention-attention.html
+
     """
 
     def __init__(self, num_heads=8, d_model=512, d_ff=2048,
@@ -314,12 +321,18 @@ class Transformer(BaseModelMixin):
             bleu_score = sentence_bleu([truth], pred, smoothing_function=smoothie)
             bleu_scores.append(bleu_score)
 
-        print("Last pair:", truth, pred)
-        print("Bleu scores:", bleu_scores)
+        # Print the last pair for fun.
+        inp_sent = list(map(lambda i: self._input_id2word.get(i, '<unk>'), test_input_ids[-1]))
+        inp_sent = remove_tailing_empty(inp_sent)
+
+        print("[Source]", ' '.join(inp_sent))
+        print("[Truth]", ' '.join(truth))
+        print("[Translated]", ' '.join(pred))
 
         return {'loss': test_loss,
-                'avg_bleu': np.mean(bleu_scores),
-                'max_bleu': np.max(bleu_scores)}
+                'bleu_avg': np.mean(bleu_scores),
+                'bleu_max': np.max(bleu_scores),
+                'bleu_median': np.median(bleu_scores)}
 
     # ============================= Utils ===============================
 
