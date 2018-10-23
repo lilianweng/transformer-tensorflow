@@ -10,7 +10,7 @@ import numpy as np
 import tensorflow as tf
 
 from utils import BaseModelMixin
-from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 from baselines.common.tf_util import display_var_info
 
 
@@ -310,7 +310,6 @@ class Transformer(BaseModelMixin):
         return pred_ids
 
     def evaluate(self, input_ids, target_ids):
-        bleu_scores = []
         smoothie = SmoothingFunction().method4
 
         def remove_tailing_empty(words):
@@ -321,6 +320,8 @@ class Transformer(BaseModelMixin):
 
         pred_ids = self.predict(input_ids)
 
+        refs = []
+        hypos = []
         for truth, pred in zip(target_ids, pred_ids):
             truth = list(map(lambda i: self._target_id2word.get(i, '<unk>'), truth))
             pred = list(map(lambda i: self._target_id2word.get(i, '<unk>'), pred))
@@ -328,8 +329,8 @@ class Transformer(BaseModelMixin):
             truth = remove_tailing_empty(truth)
             pred = remove_tailing_empty(pred)
 
-            bleu_score = sentence_bleu([truth], pred, smoothing_function=smoothie)
-            bleu_scores.append(bleu_score)
+            refs.append([truth])
+            hypos.append(pred)
 
         # Print the last pair for fun.
         source = list(map(lambda i: self._input_id2word.get(i, '<unk>'), input_ids[-1]))
@@ -338,9 +339,12 @@ class Transformer(BaseModelMixin):
         print("[Truth]", ' '.join(truth))
         print("[Translated]", ' '.join(pred))
 
-        return {'bleu_avg': np.mean(bleu_scores),
-                'bleu_max': np.max(bleu_scores),
-                'bleu_median': np.median(bleu_scores)}
+        try:
+            bleu_score = corpus_bleu(refs, hypos, smoothing_function=smoothie)
+        except:
+            bleu_score = -1.0
+
+        return {'bleu_score': bleu_score}
 
     # ============================= Utils ===============================
 
