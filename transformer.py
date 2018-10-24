@@ -38,7 +38,7 @@ class Transformer(BaseModelMixin):
 
         # Dropout regularization: added in every sublayer before layer_norm(...) and
         # applied to embedding + positional encoding.
-        self.keep_prob = 1.0 - drop_rate
+        self.drop_rate = drop_rate
 
         # Label smoothing epsilon
         self.ls_epsilon = ls_epsilon
@@ -47,9 +47,12 @@ class Transformer(BaseModelMixin):
         self._is_init = False
         self.step = 0  # training step.
 
+        self.is_training = tf.placeholder(tf.bool, name='is_training')
         # The following variables will be initialized in build_model().
         self._input_id2word = None
         self._target_id2word = None
+        self._pad_id = 0
+        # The following variables will be constructed in build_model().
         self._input = None
         self._target = None
         self._output = None
@@ -100,31 +103,21 @@ class Transformer(BaseModelMixin):
         with tf.variable_scope(scope):
             out = self.embedding(inp, inp_vocab)  # [batch, seq_len, d_model]
             out += self.positional_encoding_sinusoid(inp)
-            out = tf.nn.dropout(out, keep_prob=self.keep_prob)
+            out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
 
         return out
 
     def layer_norm(self, inp):
         return tf.contrib.layers.layer_norm(inp)
 
-    def construct_binary_mask(self, inp):
-        batch_size = inp.shape.as_list()[0]
-        inp_shape = inp.shape.as_list()[1:]
-        mask = np.zeros(inp_shape)
-        mask[np.tril_indices(min(inp_shape))] = 1
-        mask = tf.convert_to_tensor(mask, dtype=tf.float32)
-
-        # masking out == setting to -inf.
-        masks = tf.tile(tf.expand_dims(mask, 0), [batch_size, 1, 1])  # copies
-        return masks
-
-    def scaled_dot_product_attention(self, Q, K, V, masked=False):
+    def scaled_dot_product_attention(self, Q, K, V, mask=None):
         """
         Assuming all the input tensors have three dimension:
         Args:
             Q: of shape (h * bs, q_size, d)
             K: of shape (h * bs, k_size, d)
             V: of shape (h * bs, k_size, d)
+            mask: of shape (h * bs, q_size, k_size)
         """
 
         d = self.d_model // self.h
@@ -132,24 +125,21 @@ class Transformer(BaseModelMixin):
 
         out = tf.matmul(Q, tf.transpose(K, [0, 2, 1]))  # [h*batch, q_size, k_size]
 
-        if masked:
-            # masking out == setting to -inf.
-            masks = self.construct_binary_mask(out)
-            neg_masks = 1.0 - masks
-            out = tf.multiply(out, masks) + neg_masks * (-1e10)
+        if mask is not None:
+            # masking out (0.0) => setting to -inf.
+            out = tf.multiply(out, mask) + (1.0 - mask) * (-1e10)
 
         out = tf.nn.softmax(out / tf.sqrt(tf.cast(d, tf.float32)))  # [h * bs, q_size, k_size]
         out = tf.matmul(out, V)  # [h * bs, q_size, d]
 
         return out
 
-    def multihead_attention(self, query, memory=None, masked=False, scope='attn'):
+    def multihead_attention(self, query, memory=None, mask=None, scope='attn'):
         """
         Args:
             query (tf.tensor): of shape (batch, q_size, q_embed_size)
             memory (tf.tensor): of shape (batch, m_size, k_embed_size)
-            masked (bool): should be true in decoder layers to prevent positions from
-                attending to future positions.
+            mask (tf.tensor): shape (batch, q_size, k_size)
 
         Returns:h
             a tensor of shape (bs, q_size, d_model)
@@ -168,16 +158,17 @@ class Transformer(BaseModelMixin):
             Q_split = tf.concat(tf.split(Q, self.h, axis=2), axis=0)
             K_split = tf.concat(tf.split(K, self.h, axis=2), axis=0)
             V_split = tf.concat(tf.split(V, self.h, axis=2), axis=0)
+            mask_split = tf.tile(mask, [self.h, 1, 1])
 
             # Apply scaled dot product attention
-            out = self.scaled_dot_product_attention(Q_split, K_split, V_split, masked=masked)
+            out = self.scaled_dot_product_attention(Q_split, K_split, V_split, mask=mask_split)
 
             # Merge the multi-head back to the original shape
             out = tf.concat(tf.split(out, self.h, axis=0), axis=2)  # [bs, q_size, d_model]
 
             # The final linear layer and dropout.
             out = tf.layers.dense(out, self.d_model)
-            out = tf.nn.dropout(out, keep_prob=self.keep_prob)
+            out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
 
         return out
 
@@ -190,40 +181,81 @@ class Transformer(BaseModelMixin):
         Args:
             inp (tf.tensor): shape [batch, length, d_model]
         """
+        out = inp
         with tf.variable_scope(scope):
-            out = tf.layers.dense(inp, self.d_ff, activation=tf.nn.relu)
+            out = tf.layers.dense(out, self.d_ff, activation=tf.nn.relu)
             out = tf.layers.dense(out, self.d_model, activation=None)
-            out = tf.nn.dropout(out, keep_prob=self.keep_prob)
+            out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
 
         return out
 
-    def encoder_layer(self, inp, scope):
+    def construct_padding_mask(self, inp):
+        """
+        Args: Original input of word ids, shape [batch, seq_len]
+        Returns: a mask of shape [batch, seq_len, seq_len], where <pad> is 0 and others are 1s.
+        """
+        seq_len = inp.shape.as_list()[1]
+        mask = tf.cast(tf.not_equal(inp, self._pad_id), tf.float32)  # mask '<pad>'
+        mask = tf.tile(tf.expand_dims(mask, 1), [1, seq_len, 1])
+        return mask
+
+    def construct_autoregressive_mask(self, target):
+        """
+        Args: Original target of word ids, shape [batch, seq_len]
+        Returns: a mask of shape [batch, seq_len, seq_len].
+        """
+        batch_size, seq_len = target.shape.as_list()
+
+        tri_matrix = np.zeros((seq_len, seq_len))
+        tri_matrix[np.tril_indices(seq_len)] = 1
+
+        mask = tf.convert_to_tensor(tri_matrix, dtype=tf.float32)
+        masks = tf.tile(tf.expand_dims(mask, 0), [batch_size, 1, 1])  # copies
+        return masks
+
+    def encoder_layer(self, inp, input_mask, scope):
+        """
+        Args:
+            inp: tf.tensor of shape (batch, seq_len, embed_size)
+            input_mask: tf.tensor of shape (batch, seq_len, seq_len)
+        """
+        out = inp
         with tf.variable_scope(scope):
             # One multi-head attention + one feed-forword
-            out = self.layer_norm(inp + self.multihead_attention(inp))
+            out = self.layer_norm(out + self.multihead_attention(out, mask=input_mask))
             out = self.layer_norm(out + self.feed_forwad(out))
         return out
 
-    def encoder(self, inp, scope='encoder'):
-        out = inp
+    def encoder(self, inp, input_mask, scope='encoder'):
+        """
+        Args:
+            inp (tf.tensor): shape (batch, seq_len, embed_size)
+            input_mask (tf.tensor): shape (batch, seq_len, seq_len)
+            scope (str):
+
+        Returns:
+        """
+        out = inp  # now, (batch, seq_len, embed_size)
         with tf.variable_scope(scope):
             for i in range(self.num_enc_layers):
-                out = self.encoder_layer(out, scope=f'enc_{i}')
+                out = self.encoder_layer(out, input_mask, f'enc_{i}')
         return out
 
-    def decoder_layer(self, inp, enc_out, scope):
+    def decoder_layer(self, target, enc_out, input_mask, target_mask, scope):
+        out = target
         with tf.variable_scope(scope):
-            out = self.layer_norm(inp + self.multihead_attention(
-                inp, masked=True, scope='self_attn'))
-            out = self.layer_norm(out + self.multihead_attention(inp, memory=enc_out))
+            out = self.layer_norm(out + self.multihead_attention(
+                out, mask=target_mask, scope='self_attn'))
+            out = self.layer_norm(out + self.multihead_attention(
+                out, memory=enc_out, mask=input_mask))
             out = self.layer_norm(out + self.feed_forwad(out))
         return out
 
-    def decoder(self, inp, enc_out, scope='decoder'):
-        out = inp
+    def decoder(self, target, enc_out, input_mask, target_mask, scope='decoder'):
+        out = target
         with tf.variable_scope(scope):
             for i in range(self.num_enc_layers):
-                out = self.decoder_layer(out, enc_out, scope=f'dec_{i}')
+                out = self.decoder_layer(out, enc_out, input_mask, target_mask, f'dec_{i}')
         return out
 
     def label_smoothing(self, inp):
@@ -238,20 +270,25 @@ class Transformer(BaseModelMixin):
         smoothed = (1.0 - self.ls_epsilon) * inp + (self.ls_epsilon / vocab_size)
         return smoothed
 
-    def build_model(self, input_id2word, target_id2word, **train_params):
+    def build_model(self, input_id2word, target_id2word, pad_id, **train_params):
         """
         Args:
-            input_vocab (int)
-            target_vocab (int)
+            input_id2word (dict)
+            target_id2word (dict)
+            pad_id (int): the id of '<pad>' symbol.
 
         Returns:
         """
+        assert input_id2word[pad_id] == '<pad>'
+        assert target_id2word[pad_id] == '<pad>'
+
         lr = train_params.get('lr', 0.0001)
         batch_size = train_params.get('batch_size', 32)
         seq_len = train_params.get('seq_len', 20)
 
         self._input_id2word = input_id2word
         self._target_id2word = target_id2word
+        self._pad_id = np.int32(pad_id)
 
         input_vocab = len(input_id2word)
         target_vocab = len(target_id2word)
@@ -260,16 +297,23 @@ class Transformer(BaseModelMixin):
             self._input = tf.placeholder(tf.int32, shape=[batch_size, seq_len], name='input')
             self._target = tf.placeholder(tf.int32, shape=[batch_size, seq_len], name='target')
 
+            # The input mask only hides the <pad> symbol.
+            input_mask = self.construct_padding_mask(self._input)
+            # The target mask hides both <pad> and future words.
+            target_mask = self.construct_padding_mask(self._target)
+            target_mask *= self.construct_autoregressive_mask(self._target)
+
             # Input embedding + positional encoding
-            inp = self.preprocess(self._input, input_vocab, "input_preprocess")
-            enc_out = self.encoder(inp)
+            input_embed = self.preprocess(self._input, input_vocab, "input_preprocess")
+            enc_out = self.encoder(input_embed, input_mask)
 
-            tgt = self.preprocess(self._target, target_vocab, "target_preprocess")
-            dec_out = self.decoder(tgt, enc_out)
+            # Target embedding + positional encoding
+            target_embed = self.preprocess(self._target, target_vocab, "target_preprocess")
+            dec_out = self.decoder(target_embed, enc_out, input_mask, target_mask)
 
-            target = tf.one_hot(self._target, depth=target_vocab)
+            target_ohe = tf.one_hot(self._target, depth=target_vocab)
             if self.use_label_smoothing:
-                target = self.label_smoothing(target)
+                target_ohe = self.label_smoothing(target_ohe)
 
             logits = tf.layers.dense(dec_out, target_vocab)  # [batch, target_vocab]
             probas = tf.nn.softmax(logits)
@@ -279,7 +323,7 @@ class Transformer(BaseModelMixin):
             print(logits.shape, probas.shape, self._output.shape)
 
             self._loss = tf.reduce_mean(
-                tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=target))
+                tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=target_ohe))
 
             optim = tf.train.AdamOptimizer(learning_rate=lr)
             self._train_op = optim.minimize(self._loss)
@@ -301,9 +345,11 @@ class Transformer(BaseModelMixin):
         assert self._is_init, "Call .init() first."
         self.step += 1
         train_loss, summary, _ = self.sess.run(
-            [self.loss, self.merged_summary, self.train_op], feed_dict={
+            [self.loss, self.merged_summary, self.train_op],
+            feed_dict={
                 self.input_ph: input_ids.astype(np.int32),
                 self.target_ph: target_ids.astype(np.int32),
+                self.is_training: True,
             })
         self.writer.add_summary(summary, global_step=self.step)
 
@@ -323,23 +369,24 @@ class Transformer(BaseModelMixin):
         # Predict one output a time autoregressively.
         for i in range(seq_len):
             next_probas, next_pred = self.sess.run(
-                [self.probas, self._output], feed_dict={
+                [self.probas, self._output],
+                feed_dict={
                     self.input_ph: input_ids,
                     self.target_ph: pred_ids,
+                    self.is_training: False,
                 })
             # Only update the i-th column in one step.
-            pred_ids[: i] = next_pred[: i]
-            #print(f"i={i}", next_probas)
-            #print(f"i={i}", pred_ids)
+            pred_ids[:, i] = next_pred[:, i]
+            print(f"i={i}", pred_ids)
 
         return pred_ids
 
     def evaluate(self, input_ids, target_ids):
         smoothie = SmoothingFunction().method4
 
-        def remove_tailing_empty(words):
+        def remove_tailing_padding(words):
             i = len(words) - 1
-            while i >= 0 and words[i] == '<empty>':
+            while i >= 0 and words[i] == '<pad>':
                 i -= 1
             return words[:i + 1]
 
@@ -351,24 +398,20 @@ class Transformer(BaseModelMixin):
             truth = list(map(lambda i: self._target_id2word.get(i, '<unk>'), truth))
             pred = list(map(lambda i: self._target_id2word.get(i, '<unk>'), pred))
 
-            truth = remove_tailing_empty(truth)
-            pred = remove_tailing_empty(pred)
+            truth = remove_tailing_padding(truth)
+            pred = remove_tailing_padding(pred)
 
             refs.append([truth])
             hypos.append(pred)
 
         # Print the last pair for fun.
         source = list(map(lambda i: self._input_id2word.get(i, '<unk>'), input_ids[-1]))
-        source = remove_tailing_empty(source)
+        source = remove_tailing_padding(source)
         print("[Source]", ' '.join(source))
         print("[Truth]", ' '.join(truth))
         print("[Translated]", ' '.join(pred))
 
-        try:
-            bleu_score = corpus_bleu(refs, hypos, smoothing_function=smoothie)
-        except:
-            bleu_score = -1.0
-
+        bleu_score = corpus_bleu(refs, hypos, smoothing_function=smoothie)
         return {'bleu_score': bleu_score}
 
     # ============================= Utils ===============================

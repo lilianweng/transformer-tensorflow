@@ -42,7 +42,7 @@ def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
         model_name=model_name,
         tf_sess_config=tf_sess_config
     )
-    transformer.build_model(id2en, id2vi, **train_params)
+    transformer.build_model(id2en, id2vi, PAD_ID, **train_params)
     transformer.print_trainable_variables()
 
     test_data_iter = data_generator(batch_size, seq_len, data_dir=data_dir, file_prefix='tst2013')
