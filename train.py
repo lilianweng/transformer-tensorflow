@@ -14,7 +14,7 @@ from transformer import *
 @click.option('--max-steps', type=int, default=100000, show_default=True, help="Max train steps.")
 def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
     data_dir = '/tmp/iwslt15/'
-    maybe_download_data_files(data_dir)
+    DatasetManager('iwslt15').maybe_download_data_files()
 
     # Load vocabulary first.
     en2id, id2en = load_vocab(os.path.join(data_dir, 'vocab.en'))

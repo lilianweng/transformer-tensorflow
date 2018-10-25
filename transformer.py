@@ -24,10 +24,11 @@ class Transformer(BaseModelMixin):
     """
 
     def __init__(self, num_heads=8, d_model=512, d_ff=2048,
-                 num_enc_layers=6, num_dec_layers=6,
-                 drop_rate=0.1, use_label_smoothing=True, ls_epsilon=0.1,
+                 num_enc_layers=6, num_dec_layers=6, drop_rate=0.1,
+                 ls_epsilon=0.1, use_label_smoothing=True, pos_encoding_type='sinusoid',
                  model_name='transformer', tf_sess_config=None):
         assert d_model % num_heads == 0
+        assert pos_encoding_type in ('sinusoid', 'embedding')
         super().__init__(model_name, tf_sess_config=tf_sess_config)
 
         self.h = num_heads
@@ -44,6 +45,7 @@ class Transformer(BaseModelMixin):
         # Label smoothing epsilon
         self.ls_epsilon = ls_epsilon
         self.use_label_smoothing = use_label_smoothing
+        self.pos_encoding_type = pos_encoding_type
 
         self._is_init = False
         self.step = 0  # training step.
@@ -54,56 +56,75 @@ class Transformer(BaseModelMixin):
         self._target_id2word = None
         self._pad_id = 0
         # The following variables will be constructed in build_model().
-        self._input = None
-        self._target = None
+        self._raw_input = None
+        self._raw_target = None
         self._output = None
+        self._accuracy = None
         self._loss = None
         self._train_op = None
 
-    def embedding(self, inp, vocab_size):
+    def embedding(self, inp, vocab_size, zero_pad=True):
         embed_size = self.d_model
         embed_lookup = tf.get_variable("embed_lookup", [vocab_size, embed_size], tf.float32)
+
+        if zero_pad:
+            assert self._pad_id == 0
+            embed_lookup = tf.concat((tf.zeros(shape=[1, self.d_model]), embed_lookup[1:, :]), 0)
+
         out = tf.nn.embedding_lookup(embed_lookup, inp)
         return out
 
-    def positional_encoding_embedding(self, inp):
+    def _positional_encoding_embedding(self, inp):
         batch_size, seq_len = inp.shape.as_list()
 
-        # Copy [0, 1, ..., `inp_size`] by `batch_size` times => matrix [batch, seq_len]
-        pos_ind = tf.tile(tf.expand_dims(tf.range(seq_len), 0), [batch_size, 1])
-        return self.embedding(pos_ind, seq_len)  # [batch, seq_len, d_model]
+        with tf.variable_scope('positional_embedding'):
+            # Copy [0, 1, ..., `inp_size`] by `batch_size` times => matrix [batch, seq_len]
+            pos_ind = tf.tile(tf.expand_dims(tf.range(seq_len), 0), [batch_size, 1])
+            return self.embedding(pos_ind, seq_len, zero_pad=False)  # [batch, seq_len, d_model]
 
-    def positional_encoding_sinusoid(self, inp):
+    def _positional_encoding_sinusoid(self, inp):
         """
         PE(pos, 2i) = sin(pos / 10000^{2i/d_model})
         PE(pos, 2i+1) = cos(pos / 10000^{2i/d_model})
         """
         batch, seq_len = inp.shape.as_list()
 
-        # Copy [0, 1, ..., `inp_size`] by `batch_size` times => matrix [batch, seq_len]
-        pos_ind = tf.tile(tf.expand_dims(tf.range(seq_len), 0), [batch, 1])
+        with tf.variable_scope('positional_sinusoid'):
+            # Copy [0, 1, ..., `inp_size`] by `batch_size` times => matrix [batch, seq_len]
+            pos_ind = tf.tile(tf.expand_dims(tf.range(seq_len), 0), [batch, 1])
 
-        # Compute the arguments for sin and cos: pos / 10000^{2i/d_model})
-        # `pos_enc` is a tensor of shape [seq_len, d_model]
-        pos_enc = np.array([
-            [pos / np.power(10000, 2. * i / self.d_model) for i in range(self.d_model)]
-            for pos in range(seq_len)
-        ])
+            # Compute the arguments for sin and cos: pos / 10000^{2i/d_model})
+            # Each dimension is sin/cos wave, as a function of the position.
+            pos_enc = np.array([
+                [pos / np.power(10000., 2. * (i // 2) / self.d_model) for i in range(self.d_model)]
+                for pos in range(seq_len)
+            ])  # [seq_len, d_model]
 
-        # Apply the cosine to even columns and sin to odds.
-        pos_enc[:, 0::2] = np.sin(pos_enc[:, 0::2])  # dim 2i
-        pos_enc[:, 1::2] = np.cos(pos_enc[:, 1::2])  # dim 2i+1
+            # Apply the cosine to even columns and sin to odds.
+            pos_enc[:, 0::2] = np.sin(pos_enc[:, 0::2])  # dim 2i
+            pos_enc[:, 1::2] = np.cos(pos_enc[:, 1::2])  # dim 2i+1
 
-        # Convert to a tensor
-        lookup_table = tf.convert_to_tensor(pos_enc, dtype=tf.float32)  # [seq_len, d_model]
-        out = tf.nn.embedding_lookup(lookup_table, pos_ind)  # [batch, seq_len, d_model]
-        return out
+            # Convert to a tensor
+            lookup_table = tf.convert_to_tensor(pos_enc, dtype=tf.float32)  # [seq_len, d_model]
+            if True:
+                lookup_table = tf.concat((tf.zeros(shape=[1, self.d_model]), lookup_table[1:, :]),
+                                         0)
+
+            out = tf.nn.embedding_lookup(lookup_table, pos_ind)  # [batch, seq_len, d_model]
+            return out
+
+    def positional_encoding(self, inp):
+        if self.pos_encoding_type == 'sinusoid':
+            pos_enc = self._positional_encoding_sinusoid(inp)
+        else:
+            pos_enc = self._positional_encoding_embedding(inp)
+        return pos_enc
 
     def preprocess(self, inp, inp_vocab, scope):
         # Pre-processing: embedding + positional encoding
+        # Output shape: [batch, seq_len, d_model]
         with tf.variable_scope(scope):
-            out = self.embedding(inp, inp_vocab)  # [batch, seq_len, d_model]
-            out += self.positional_encoding_sinusoid(inp)
+            out = self.embedding(inp, inp_vocab, zero_pad=True) + self.positional_encoding(inp)
             out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
 
         return out
@@ -125,12 +146,13 @@ class Transformer(BaseModelMixin):
         assert d == Q.shape[-1] == K.shape[-1] == V.shape[-1]
 
         out = tf.matmul(Q, tf.transpose(K, [0, 2, 1]))  # [h*batch, q_size, k_size]
+        out = out / tf.sqrt(tf.cast(d, tf.float32))  # scaled by sqrt(d_k)
 
         if mask is not None:
             # masking out (0.0) => setting to -inf.
             out = tf.multiply(out, mask) + (1.0 - mask) * (-1e10)
 
-        out = tf.nn.softmax(out / tf.sqrt(tf.cast(d, tf.float32)))  # [h * bs, q_size, k_size]
+        out = tf.nn.softmax(out)  # [h * bs, q_size, k_size]
         out = tf.layers.dropout(out, training=self.is_training)
         out = tf.matmul(out, V)  # [h * bs, q_size, d]
 
@@ -169,8 +191,8 @@ class Transformer(BaseModelMixin):
             out = tf.concat(tf.split(out, self.h, axis=0), axis=2)  # [bs, q_size, d_model]
 
             # The final linear layer and dropout.
-            out = tf.layers.dense(out, self.d_model)
-            out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
+            # out = tf.layers.dense(out, self.d_model)
+            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
 
         return out
 
@@ -185,9 +207,14 @@ class Transformer(BaseModelMixin):
         """
         out = inp
         with tf.variable_scope(scope):
-            out = tf.layers.dense(out, self.d_ff, activation=tf.nn.relu)
-            out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
-            out = tf.layers.dense(out, self.d_model, activation=None)
+            # out = tf.layers.dense(out, self.d_ff, activation=tf.nn.relu)
+            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
+            # out = tf.layers.dense(out, self.d_model, activation=None)
+
+            out = tf.layers.conv1d(out, filters=self.d_ff, kernel_size=1,
+                                   activation=tf.nn.relu, use_bias=True)
+            out = tf.layers.conv1d(out, filters=self.d_model, kernel_size=1,
+                                   activation=None, use_bias=True)
 
         return out
 
@@ -296,18 +323,20 @@ class Transformer(BaseModelMixin):
         target_vocab = len(target_id2word)
 
         with tf.variable_scope(self.model_name):
-            self._input = tf.placeholder(tf.int32, shape=[batch_size, seq_len + 1], name='input')
-            self._target = tf.placeholder(tf.int32, shape=[batch_size, seq_len + 1], name='target')
+            self._raw_input = tf.placeholder(tf.int32, shape=[batch_size, seq_len + 1],
+                                             name='raw_input')
+            self._raw_target = tf.placeholder(tf.int32, shape=[batch_size, seq_len + 1],
+                                              name='raw_target')
 
             # Add the offset on the input and target sentences.
 
             # For the input we remove the starting <s> to keep the seq len consistent.
-            enc_inp = self._input[:, 1:]
+            enc_inp = self._raw_input[:, 1:]
 
             # For the decoder input, we remove the last element, as no more future prediction
             # is gonna be made based on it.
-            dec_inp = self._target[:, :-1]  # starts with <s>
-            dec_target = self._target[:, 1:]  # starts with the first word
+            dec_inp = self._raw_target[:, :-1]  # starts with <s>
+            dec_target = self._raw_target[:, 1:]  # starts with the first word
             dec_target_ohe = tf.one_hot(dec_target, depth=target_vocab)
             if self.use_label_smoothing:
                 dec_target_ohe = self.label_smoothing(dec_target_ohe)
@@ -329,9 +358,14 @@ class Transformer(BaseModelMixin):
 
             # Make the prediction out of the decoder output.
             logits = tf.layers.dense(dec_out, target_vocab)  # [batch, target_vocab]
-            probas = tf.nn.softmax(logits)
-            self._output = tf.argmax(probas, axis=-1, output_type=tf.int32)
-            print(logits.shape, probas.shape, self._output.shape)
+            self._output = tf.argmax(logits, axis=-1, output_type=tf.int32)
+            print(logits.shape, self._output.shape)
+
+            target_not_pad = tf.cast(tf.not_equal(dec_target, self._pad_id), tf.float32)
+            self._accuracy = tf.reduce_sum(
+                tf.cast(tf.equal(self._output, dec_target), tf.float32) * target_not_pad /
+                tf.cast(tf.reduce_sum(target_not_pad), tf.float32)
+            )
 
             self._loss = tf.reduce_mean(
                 tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=dec_target_ohe))
@@ -341,6 +375,7 @@ class Transformer(BaseModelMixin):
 
         with tf.variable_scope(self.model_name + '_summary'):
             tf.summary.scalar('loss', self._loss)
+            tf.summary.scalar('accuracy', self._accuracy)
             self.merged_summary = tf.summary.merge_all()
 
     def init(self):
@@ -358,8 +393,8 @@ class Transformer(BaseModelMixin):
         train_loss, summary, _ = self.sess.run(
             [self.loss, self.merged_summary, self.train_op],
             feed_dict={
-                self.input_ph: input_ids.astype(np.int32),
-                self.target_ph: target_ids.astype(np.int32),
+                self.raw_input_ph: input_ids.astype(np.int32),
+                self.raw_target_ph: target_ids.astype(np.int32),
                 self.is_training: True,
             })
         self.writer.add_summary(summary, global_step=self.step)
@@ -371,8 +406,8 @@ class Transformer(BaseModelMixin):
         return {'train_loss': train_loss, 'step': self.step}
 
     def predict(self, input_ids):
-        assert list(input_ids.shape) == self.input_ph.shape.as_list()
-        batch_size, inp_seq_len = self.input_ph.shape.as_list()
+        assert list(input_ids.shape) == self.raw_input_ph.shape.as_list()
+        batch_size, inp_seq_len = self.raw_input_ph.shape.as_list()
 
         input_ids = input_ids.astype(np.int32)
         pred_ids = np.zeros(input_ids.shape, dtype=np.int32)
@@ -382,12 +417,12 @@ class Transformer(BaseModelMixin):
         for i in range(1, inp_seq_len):
             # The decoder does not output <s>
             next_pred = self.sess.run(self._output, feed_dict={
-                    self.input_ph: input_ids,
-                    self.target_ph: pred_ids,
-                    self.is_training: False,
-                })
+                self.raw_input_ph: input_ids,
+                self.raw_target_ph: pred_ids,
+                self.is_training: False,
+            })
             # Only update the i-th column in one step.
-            pred_ids[:, i] = next_pred[:, i-1]
+            pred_ids[:, i] = next_pred[:, i - 1]
             print(f"i={i}", pred_ids)
 
         return pred_ids
@@ -426,12 +461,12 @@ class Transformer(BaseModelMixin):
         return v
 
     @property
-    def input_ph(self):
-        return self._check_variable(self._input, 'input placeholder')
+    def raw_input_ph(self):
+        return self._check_variable(self._raw_input, 'input placeholder')
 
     @property
-    def target_ph(self):
-        return self._check_variable(self._target, 'target placeholder')
+    def raw_target_ph(self):
+        return self._check_variable(self._raw_target, 'target placeholder')
 
     @property
     def train_op(self):

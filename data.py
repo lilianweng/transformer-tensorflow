@@ -1,6 +1,6 @@
 import os
 import sys
-import urllib
+import urllib.parse
 import numpy as np
 
 # IDs of special characters.
@@ -10,36 +10,53 @@ START_ID = 2
 END_ID = 3
 
 
-def download_data_from_url(download_url, data_dir):
-    filename = download_url.split('/')[-1]
-    filepath = os.path.join(data_dir, filename)
+class DatasetManager:
+    dataset_config_dict = {
+        'iwslt15': {
+            'source_lang': 'en',
+            'target_lang': 'vi',
+            'url': "https://nlp.stanford.edu/projects/nmt/data/iwslt15.en-vi/",
+            'files': ['train.en', 'train.vi', 'tst2012.en', 'tst2012.en',
+                      'tst2013.en', 'tst2013.vi', 'vocab.en', 'vocab.vi']
+        }
 
-    if not os.path.exists(filepath):
-        # If the file does not exist, download it.
-        def _progress(count, block_size, total_size):
-            sys.stdout.write('\r>> Downloading %s %.1f%%' % (
-                filename, float(count * block_size) / float(total_size) * 100.0))
-            sys.stdout.flush()
+    }
 
-        filepath, _ = urllib.request.urlretrieve(download_url, filepath, _progress)
-        print()
-        statinfo = os.stat(filepath)
-        print('Successfully downloaded', filename, statinfo.st_size, 'bytes.')
+    def __init__(self, name, base_data_dir='/tmp/'):
+        assert name in self.dataset_config_dict
 
-    return filepath
+        self.name = name
+        self.data_config = self.dataset_config_dict[name]
+        self.data_dir = os.path.join(base_data_dir, name)
+        os.makedirs(self.data_dir, exist_ok=True)
 
+    def _download_data_from_url(self, download_url):
+        filename = download_url.split('/')[-1]
+        filepath = os.path.join(self.data_dir, filename)
 
-def maybe_download_data_files(data_dir):
-    """Download and extract the file from Stanford NLP website.
-    """
-    os.makedirs(data_dir, exist_ok=True)
-    site_prefix = "https://nlp.stanford.edu/projects/nmt/data/iwslt15.en-vi/"
-    filenames = ['train.en', 'train.vi', 'tst2012.en', 'tst2012.en',
-                 'tst2013.en', 'tst2013.vi', 'vocab.en', 'vocab.vi']
-    for filename in filenames:
-        download_data_from_url(urllib.parse.urljoin(site_prefix, filename), data_dir)
+        if not os.path.exists(filepath):
+            # If the file does not exist, download it.
+            def _progress(count, block_size, total_size):
+                sys.stdout.write('\r>> Downloading %s %.1f%%' % (
+                    filename, float(count * block_size) / float(total_size) * 100.0))
+                sys.stdout.flush()
 
-    return os.listdir(data_dir)
+            filepath, _ = urllib.request.urlretrieve(download_url, filepath, _progress)
+            print()
+            statinfo = os.stat(filepath)
+            print('Successfully downloaded', filename, statinfo.st_size, 'bytes.')
+
+        return filepath
+
+    def maybe_download_data_files(self):
+        """Download and extract the file from Stanford NLP website.
+        """
+        for filename in self.data_config['files']:
+            self._download_data_from_url(
+                urllib.parse.urljoin(self.data_config['url'], filename)
+            )
+
+        return os.listdir(self.data_dir)
 
 
 def load_vocab(vocab_file):
