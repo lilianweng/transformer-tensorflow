@@ -40,3 +40,6 @@ class TransformerTest(tf.test.TestCase):
             mask_ph = self.t.construct_autoregressive_mask(self.input_ph)
             mask = sess.run(mask_ph, feed_dict={self.input_ph: data})
             np.testing.assert_array_equal(mask, expected)
+
+    def test_label_smoothing(self):
+        pass

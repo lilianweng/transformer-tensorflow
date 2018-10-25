@@ -13,6 +13,7 @@ import tensorflow as tf
 from utils import BaseModelMixin
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 from baselines.common.tf_util import display_var_info
+from data import recover_sentence
 
 
 class Transformer(BaseModelMixin):
@@ -130,6 +131,7 @@ class Transformer(BaseModelMixin):
             out = tf.multiply(out, mask) + (1.0 - mask) * (-1e10)
 
         out = tf.nn.softmax(out / tf.sqrt(tf.cast(d, tf.float32)))  # [h * bs, q_size, k_size]
+        out = tf.layers.dropout(out, training=self.is_training)
         out = tf.matmul(out, V)  # [h * bs, q_size, d]
 
         return out
@@ -154,7 +156,7 @@ class Transformer(BaseModelMixin):
             V = tf.layers.dense(memory, self.d_model, activation=tf.nn.relu)
 
             # Split the matrix to multiple heads and then concatenate to have a larger
-            # batch size: [h*batch, q_size/k_size, d]
+            # batch size: [h*batch, q_size/k_size, d_model/num_heads]
             Q_split = tf.concat(tf.split(Q, self.h, axis=2), axis=0)
             K_split = tf.concat(tf.split(K, self.h, axis=2), axis=0)
             V_split = tf.concat(tf.split(V, self.h, axis=2), axis=0)
@@ -184,8 +186,8 @@ class Transformer(BaseModelMixin):
         out = inp
         with tf.variable_scope(scope):
             out = tf.layers.dense(out, self.d_ff, activation=tf.nn.relu)
-            out = tf.layers.dense(out, self.d_model, activation=None)
             out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
+            out = tf.layers.dense(out, self.d_model, activation=None)
 
         return out
 
@@ -294,36 +296,45 @@ class Transformer(BaseModelMixin):
         target_vocab = len(target_id2word)
 
         with tf.variable_scope(self.model_name):
-            self._input = tf.placeholder(tf.int32, shape=[batch_size, seq_len], name='input')
-            self._target = tf.placeholder(tf.int32, shape=[batch_size, seq_len], name='target')
+            self._input = tf.placeholder(tf.int32, shape=[batch_size, seq_len + 1], name='input')
+            self._target = tf.placeholder(tf.int32, shape=[batch_size, seq_len + 1], name='target')
+
+            # Add the offset on the input and target sentences.
+
+            # For the input we remove the starting <s> to keep the seq len consistent.
+            enc_inp = self._input[:, 1:]
+
+            # For the decoder input, we remove the last element, as no more future prediction
+            # is gonna be made based on it.
+            dec_inp = self._target[:, :-1]
+            dec_target = self._target[:, 1:]
+            dec_target_ohe = tf.one_hot(dec_target, depth=target_vocab)
+            if self.use_label_smoothing:
+                dec_target_ohe = self.label_smoothing(dec_target_ohe)
 
             # The input mask only hides the <pad> symbol.
-            input_mask = self.construct_padding_mask(self._input)
+            input_mask = self.construct_padding_mask(enc_inp)
+
             # The target mask hides both <pad> and future words.
-            target_mask = self.construct_padding_mask(self._target)
-            target_mask *= self.construct_autoregressive_mask(self._target)
+            target_mask = self.construct_padding_mask(dec_inp)
+            target_mask *= self.construct_autoregressive_mask(dec_inp)
 
             # Input embedding + positional encoding
-            input_embed = self.preprocess(self._input, input_vocab, "input_preprocess")
-            enc_out = self.encoder(input_embed, input_mask)
+            inp_embed = self.preprocess(enc_inp, input_vocab, "input_preprocess")
+            enc_out = self.encoder(inp_embed, input_mask)
 
             # Target embedding + positional encoding
-            target_embed = self.preprocess(self._target, target_vocab, "target_preprocess")
-            dec_out = self.decoder(target_embed, enc_out, input_mask, target_mask)
+            dec_inp_embed = self.preprocess(dec_inp, target_vocab, "target_preprocess")
+            dec_out = self.decoder(dec_inp_embed, enc_out, input_mask, target_mask)
 
-            target_ohe = tf.one_hot(self._target, depth=target_vocab)
-            if self.use_label_smoothing:
-                target_ohe = self.label_smoothing(target_ohe)
-
+            # Make the prediction out of the decoder output.
             logits = tf.layers.dense(dec_out, target_vocab)  # [batch, target_vocab]
             probas = tf.nn.softmax(logits)
-
-            self.probas = probas
             self._output = tf.argmax(probas, axis=-1, output_type=tf.int32)
             print(logits.shape, probas.shape, self._output.shape)
 
             self._loss = tf.reduce_mean(
-                tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=target_ohe))
+                tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=dec_target_ohe))
 
             optim = tf.train.AdamOptimizer(learning_rate=lr)
             self._train_op = optim.minimize(self._loss)
@@ -367,10 +378,8 @@ class Transformer(BaseModelMixin):
         pred_ids = np.zeros(input_ids.shape, dtype=np.int32)
 
         # Predict one output a time autoregressively.
-        for i in range(seq_len):
-            next_probas, next_pred = self.sess.run(
-                [self.probas, self._output],
-                feed_dict={
+        for i in range(seq_len - 1):
+            next_pred = self.sess.run(self._output, feed_dict={
                     self.input_ph: input_ids,
                     self.target_ph: pred_ids,
                     self.is_training: False,
@@ -382,35 +391,24 @@ class Transformer(BaseModelMixin):
         return pred_ids
 
     def evaluate(self, input_ids, target_ids):
-        smoothie = SmoothingFunction().method4
-
-        def remove_tailing_padding(words):
-            i = len(words) - 1
-            while i >= 0 and words[i] == '<pad>':
-                i -= 1
-            return words[:i + 1]
-
         pred_ids = self.predict(input_ids)
 
         refs = []
         hypos = []
         for truth, pred in zip(target_ids, pred_ids):
-            truth = list(map(lambda i: self._target_id2word.get(i, '<unk>'), truth))
-            pred = list(map(lambda i: self._target_id2word.get(i, '<unk>'), pred))
+            truth_sent = recover_sentence(truth, self._target_id2word)
+            pred_sent = recover_sentence(pred, self._target_id2word)
 
-            truth = remove_tailing_padding(truth)
-            pred = remove_tailing_padding(pred)
-
-            refs.append([truth])
-            hypos.append(pred)
+            refs.append([truth_sent])
+            hypos.append(pred_sent)
 
         # Print the last pair for fun.
-        source = list(map(lambda i: self._input_id2word.get(i, '<unk>'), input_ids[-1]))
-        source = remove_tailing_padding(source)
-        print("[Source]", ' '.join(source))
-        print("[Truth]", ' '.join(truth))
-        print("[Translated]", ' '.join(pred))
+        source_sent = recover_sentence(input_ids[-1], self._input_id2word)
+        print("[Source]", source_sent)
+        print("[Truth]", truth_sent)
+        print("[Translated]", pred_sent)
 
+        smoothie = SmoothingFunction().method4
         bleu_score = corpus_bleu(refs, hypos, smoothing_function=smoothie)
         return {'bleu_score': bleu_score}
 

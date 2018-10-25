@@ -45,22 +45,23 @@ def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
     transformer.build_model(id2en, id2vi, PAD_ID, **train_params)
     transformer.print_trainable_variables()
 
-    test_data_iter = data_generator(batch_size, seq_len, data_dir=data_dir, file_prefix='tst2013')
+    train_data_iter = data_generator(batch_size, seq_len + 1, data_dir=data_dir, prefix='train')
+    test_data_iter = data_generator(batch_size, seq_len + 1, data_dir=data_dir, prefix='tst2013')
     logger.configure(dir=transformer.log_dir, format_strs=['stdout', 'csv'])
 
     transformer.init()  # step = 0
     while transformer.step < max_steps:
-        for input_ids, target_ids in data_generator(batch_size, seq_len, data_dir=data_dir):
-            meta = transformer.train(input_ids, target_ids)
-            for k, v in meta.items():
-                logger.logkv(k, v)
+        input_ids, target_ids = next(train_data_iter)
+        meta = transformer.train(input_ids, target_ids)
+        for k, v in meta.items():
+            logger.logkv(k, v)
 
-            if transformer.step % 100 == 0:
-                test_inp_ids, test_target_ids = next(test_data_iter)
-                meta = transformer.evaluate(test_inp_ids, test_target_ids)
-                for k, v in meta.items():
-                    logger.logkv('test_' + k, v)
-                logger.dumpkvs()
+        if transformer.step % 100 == 0:
+            test_inp_ids, test_target_ids = next(test_data_iter)
+            meta = transformer.evaluate(test_inp_ids, test_target_ids)
+            for k, v in meta.items():
+                logger.logkv('test_' + k, v)
+            logger.dumpkvs()
 
     transformer.done()
 

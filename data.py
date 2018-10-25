@@ -82,6 +82,7 @@ def sentence_pair_iterator(file1, file2, word2id1, word2id2, seq_len):
         line = line.strip().lower().split()
         word_ids = [word2id.get(w, UNKNOWN_ID) for w in line]
         # If the sentence is not long enough, extend with '<pad>' symbols.
+        word_ids = [START_ID] + word_ids + [END_ID]
         word_ids += [PAD_ID] * max(0, seq_len - len(word_ids))
         return word_ids
 
@@ -92,7 +93,7 @@ def sentence_pair_iterator(file1, file2, word2id1, word2id2, seq_len):
             yield sent1, sent2
 
 
-def data_generator(batch_size, seq_len, data_dir="/tmp/iwslt15/", file_prefix='train'):
+def data_generator(batch_size, seq_len, data_dir="/tmp/iwslt15/", prefix='train'):
     # Load vocabulary
     en2id, id2en = load_vocab(os.path.join(data_dir, 'vocab.en'))
     vi2id, id2vi = load_vocab(os.path.join(data_dir, 'vocab.vi'))
@@ -100,8 +101,8 @@ def data_generator(batch_size, seq_len, data_dir="/tmp/iwslt15/", file_prefix='t
     batch_en, batch_vi = [], []
     while True:
         for ids_en, ids_vi in sentence_pair_iterator(
-                os.path.join(data_dir, file_prefix + '.en'),
-                os.path.join(data_dir, file_prefix + '.vi'),
+                os.path.join(data_dir, prefix + '.en'),
+                os.path.join(data_dir, prefix + '.vi'),
                 en2id, vi2id, seq_len
         ):
             batch_en.append(ids_en)
@@ -110,3 +111,14 @@ def data_generator(batch_size, seq_len, data_dir="/tmp/iwslt15/", file_prefix='t
             if len(batch_en) == batch_size:
                 yield np.array(batch_en).copy(), np.array(batch_vi).copy()
                 batch_en, batch_vi = [], []
+
+
+def recover_sentence(sent_ids, id2word):
+    words = list(map(lambda i: id2word.get(i, '<unk>'), sent_ids))
+
+    # Then remove tailing <pad>
+    i = len(words) - 1
+    while i >= 0 and words[i] == '<pad>':
+        i -= 1
+    words = words[:i + 1]
+    return ' '.join(words)
