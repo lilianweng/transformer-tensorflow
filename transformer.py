@@ -390,8 +390,8 @@ class Transformer(BaseModelMixin):
     def train(self, input_ids, target_ids):
         assert self._is_init, "Call .init() first."
         self.step += 1
-        train_loss, summary, _ = self.sess.run(
-            [self.loss, self.merged_summary, self.train_op],
+        train_loss, train_accu, summary, _ = self.sess.run(
+            [self._loss, self._accuracy, self.merged_summary, self.train_op],
             feed_dict={
                 self.raw_input_ph: input_ids.astype(np.int32),
                 self.raw_target_ph: target_ids.astype(np.int32),
@@ -403,7 +403,9 @@ class Transformer(BaseModelMixin):
             # Save the model checkpoint every 1000 steps.
             self.save_model(step=self.step)
 
-        return {'train_loss': train_loss, 'step': self.step}
+        return {'train_loss': train_loss,
+                'train_accuracy': train_accu,
+                'step': self.step}
 
     def predict(self, input_ids):
         assert list(input_ids.shape) == self.raw_input_ph.shape.as_list()

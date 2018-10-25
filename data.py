@@ -2,6 +2,7 @@ import os
 import sys
 import urllib.parse
 import numpy as np
+import random
 
 # IDs of special characters.
 PAD_ID = 0
@@ -103,7 +104,10 @@ def sentence_pair_iterator(file1, file2, word2id1, word2id2, seq_len):
         word_ids += [PAD_ID] * max(0, seq_len - len(word_ids))
         return word_ids
 
-    for l1, l2 in zip(open(file1), open(file2)):
+    line_pairs = list(zip(open(file1), open(file2)))
+    random.shuffle(line_pairs)
+
+    for l1, l2 in line_pairs:
         sent1 = parse_line(l1, word2id1)
         sent2 = parse_line(l2, word2id2)
         if len(sent1) == len(sent2) == seq_len:
