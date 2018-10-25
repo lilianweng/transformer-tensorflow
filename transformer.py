@@ -13,7 +13,7 @@ import tensorflow as tf
 from utils import BaseModelMixin
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 from baselines.common.tf_util import display_var_info
-from data import recover_sentence
+from data import recover_sentence, START_ID
 
 
 class Transformer(BaseModelMixin):
@@ -306,8 +306,8 @@ class Transformer(BaseModelMixin):
 
             # For the decoder input, we remove the last element, as no more future prediction
             # is gonna be made based on it.
-            dec_inp = self._target[:, :-1]
-            dec_target = self._target[:, 1:]
+            dec_inp = self._target[:, :-1]  # starts with <s>
+            dec_target = self._target[:, 1:]  # starts with the first word
             dec_target_ohe = tf.one_hot(dec_target, depth=target_vocab)
             if self.use_label_smoothing:
                 dec_target_ohe = self.label_smoothing(dec_target_ohe)
@@ -372,20 +372,22 @@ class Transformer(BaseModelMixin):
 
     def predict(self, input_ids):
         assert list(input_ids.shape) == self.input_ph.shape.as_list()
-        batch_size, seq_len = self.input_ph.shape.as_list()
+        batch_size, inp_seq_len = self.input_ph.shape.as_list()
 
         input_ids = input_ids.astype(np.int32)
         pred_ids = np.zeros(input_ids.shape, dtype=np.int32)
+        pred_ids[:, 0] = START_ID
 
         # Predict one output a time autoregressively.
-        for i in range(seq_len - 1):
+        for i in range(1, inp_seq_len):
+            # The decoder does not output <s>
             next_pred = self.sess.run(self._output, feed_dict={
                     self.input_ph: input_ids,
                     self.target_ph: pred_ids,
                     self.is_training: False,
                 })
             # Only update the i-th column in one step.
-            pred_ids[:, i] = next_pred[:, i]
+            pred_ids[:, i] = next_pred[:, i-1]
             print(f"i={i}", pred_ids)
 
         return pred_ids

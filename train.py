@@ -10,7 +10,7 @@ from transformer import *
 @click.option('--seq-len', type=int, default=100, show_default=True, help="Input sequence length.")
 @click.option('--d-model', type=int, default=512, show_default=True, help="d_model")
 @click.option('--n-head', type=int, default=8, show_default=True, help="n_head")
-@click.option('--batch-size', type=int, default=64, show_default=True, help="Batch size")
+@click.option('--batch-size', type=int, default=32, show_default=True, help="Batch size")
 @click.option('--max-steps', type=int, default=100000, show_default=True, help="Max train steps.")
 def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
     data_dir = '/tmp/iwslt15/'
