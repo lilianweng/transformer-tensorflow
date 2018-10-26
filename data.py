@@ -12,24 +12,68 @@ END_ID = 3
 
 
 class DatasetManager:
+    """
+    Download data files and prepare the train and test data.
+
+    """
     dataset_config_dict = {
         'iwslt15': {
             'source_lang': 'en',
             'target_lang': 'vi',
             'url': "https://nlp.stanford.edu/projects/nmt/data/iwslt15.en-vi/",
-            'files': ['train.en', 'train.vi', 'tst2012.en', 'tst2012.en',
-                      'tst2013.en', 'tst2013.vi', 'vocab.en', 'vocab.vi']
-        }
+            'files': ['train.en', 'train.vi',
+                      'tst2012.en', 'tst2012.vi',
+                      'tst2013.en', 'tst2013.vi',
+                      'vocab.en', 'vocab.vi'],
+            'train': 'train',
+            'test': ['tst2012', 'tst2013'],
+            'vocab': 'vocab',
+        },
+        'wmt14': {
+            'source_lang': 'en',
+            'target_lang': 'de',
+            'url': "https://nlp.stanford.edu/projects/nmt/data/wmt14.en-de/",
+            'files': ['train.en', 'train.de', 'train.align',
+                      'newstest2012.en', 'newstest2012.de',
+                      'newstest2013.en', 'newstest2013.de',
+                      'newstest2014.en', 'newstest2014.de',
+                      'newstest2015.en', 'newstest2015.de',
+                      'vocab.50K.en', 'vocab.50K.de', 'dict.en-de'],
+            'train': 'train',
+            'test': ['newstest2012', 'newstest2013', 'newstest2014', 'newstest2015'],
+            'vocab': 'vocab.50K',
+        },
+        'wmt15': {
+            'source_lang': 'en',
+            'target_lang': 'cs',
+            'url': "https://nlp.stanford.edu/projects/nmt/data/wmt15.en-cs/",
+            'files': ['train.en', 'train.cs',
+                      'newstest2013.en', 'newstest2013.cs',
+                      'newstest2014.en', 'newstest2014.cs',
+                      'newstest2015.en', 'newstest2015.cs',
+                      'vocab.1K.en', 'vocab.1K.cs', 'vocab.10K.en', 'vocab.10K.cs'],
+            'train': 'train',
+            'test': ['newstest2013', 'newstest2014', 'newstest2015'],
+            'vocab': 'vocab.10K',
 
+        }
     }
 
     def __init__(self, name, base_data_dir='/tmp/'):
         assert name in self.dataset_config_dict
 
         self.name = name
-        self.data_config = self.dataset_config_dict[name]
+        self.config = self.dataset_config_dict[name]
+        self.source_lang = self.config['source_lang']
+        self.target_lang = self.config['target_lang']
+
         self.data_dir = os.path.join(base_data_dir, name)
         os.makedirs(self.data_dir, exist_ok=True)
+
+        self.source_word2id = None
+        self.source_id2word = None
+        self.target_word2id = None
+        self.target_id2word = None
 
     def _download_data_from_url(self, download_url):
         filename = download_url.split('/')[-1]
@@ -52,86 +96,101 @@ class DatasetManager:
     def maybe_download_data_files(self):
         """Download and extract the file from Stanford NLP website.
         """
-        for filename in self.data_config['files']:
-            self._download_data_from_url(
-                urllib.parse.urljoin(self.data_config['url'], filename)
-            )
+        for filename in self.config['files']:
+            self._download_data_from_url(urllib.parse.urljoin(self.config['url'], filename))
 
-        return os.listdir(self.data_dir)
+        print("Downloaded Files:", os.listdir(self.data_dir))
 
+    def _load_vocab_file(self, filename):
+        # The first three words in both vocab files are special characters:
+        # <unk>: unknown word.
+        # <s>: start of a sentence.
+        # </s>: # end of a sentence.
+        # In addition, we add <pad> as a place holder for a padding space.
+        vocab_file = os.path.join(self.data_dir, filename)
 
-def load_vocab(vocab_file):
-    # The first three words in both vocab files are special characters:
-    # <unk>: unknown word.
-    # <s>: start of a sentence.
-    # </s>: # end of a sentence.
-    # In addition, we add <pad> as a place holder for a padding space.
-    words = list(map(lambda w: w.strip().lower(), open(vocab_file)))
-    words.insert(0, '<pad>')
-    words = words[:4] + list(set(words[4:]))  # Keep the special characters on top.
-    word2id = {word: i for i, word in enumerate(words)}
-    id2word = {i: word for i, word in enumerate(words)}
+        words = list(map(lambda w: w.strip().lower(), open(vocab_file)))
+        words.insert(0, '<pad>')
+        words = words[:4] + list(set(words[4:]))  # Keep the special characters on top.
+        word2id = {word: i for i, word in enumerate(words)}
+        id2word = {i: word for i, word in enumerate(words)}
 
-    assert id2word[PAD_ID] == '<pad>'
-    assert id2word[UNKNOWN_ID] == '<unk>'
-    assert id2word[START_ID] == '<s>'
-    assert id2word[END_ID] == '</s>'
+        assert id2word[PAD_ID] == '<pad>'
+        assert id2word[UNKNOWN_ID] == '<unk>'
+        assert id2word[START_ID] == '<s>'
+        assert id2word[END_ID] == '</s>'
 
-    return word2id, id2word
+        return word2id, id2word
 
+    def load_vocab(self):
+        prefix = self.config['vocab']
+        self.source_word2id, self.source_id2word = self._load_vocab_file(
+            prefix + '.' + self.source_lang)
+        self.target_word2id, self.target_id2word = self._load_vocab_file(
+            prefix + '.' + self.target_lang)
 
-def sentence_pair_iterator(file1, file2, word2id1, word2id2, seq_len):
-    """
-    The sentence is discarded if it is longer than `seq_len`; otherwise we pad it with
-    '<pad>' to make it to have the exact length `seq_len`.
+        print(f"'{self.source_lang}' vocabulary size:", len(self.source_word2id))
+        print(f"'{self.target_lang}' vocabulary size:", len(self.target_word2id))
 
-    Args:
-        file1 (str): training data in language 1.
-        file2 (str): training data in language 2. Lines should match lines in `file1`.
-        word2id1 (dict): word-ID mapping for language 1.
-        word2id2 (dict):: word-ID mapping for language 2.
-        seq_len (int): max sequence length.
+    def _sentence_pair_iterator(self, file1, file2, seq_len):
+        """
+        The sentence is discarded if it is longer than `seq_len`; otherwise we pad it with
+        '<pad>' to make it to have the exact length `seq_len`.
 
-    Returns: a tuple of (a list of word id for language 1,
-                         a list of word id for language 2)
-    """
+        Args:
+            file1 (str): training data in language 1.
+            file2 (str): training data in language 2. Lines should match lines in `file1`.
+            seq_len (int): max sequence length.
 
-    def parse_line(line, word2id):
-        line = line.strip().lower().split()
-        word_ids = [word2id.get(w, UNKNOWN_ID) for w in line]
-        # If the sentence is not long enough, extend with '<pad>' symbols.
-        word_ids = [START_ID] + word_ids + [END_ID]
-        word_ids += [PAD_ID] * max(0, seq_len - len(word_ids))
-        return word_ids
+        Returns: a tuple of (a list of word id for language 1,
+                             a list of word id for language 2)
+        """
 
-    line_pairs = list(zip(open(file1), open(file2)))
-    random.shuffle(line_pairs)
+        def line_count(filename):
+            return int(os.popen(f'wc -l {filename}').read().strip().split()[0])
 
-    for l1, l2 in line_pairs:
-        sent1 = parse_line(l1, word2id1)
-        sent2 = parse_line(l2, word2id2)
-        if len(sent1) == len(sent2) == seq_len:
-            yield sent1, sent2
+        def parse_line(line, word2id):
+            line = line.strip().lower().split()
+            word_ids = [word2id.get(w, UNKNOWN_ID) for w in line]
+            # If the sentence is not long enough, extend with '<pad>' symbols.
+            word_ids = [START_ID] + word_ids + [END_ID]
+            word_ids += [PAD_ID] * max(0, seq_len - len(word_ids))
+            return word_ids
 
+        assert line_count(file1) == line_count(file2)
+        line_pairs = list(zip(open(file1), open(file2)))
+        random.shuffle(line_pairs)
 
-def data_generator(batch_size, seq_len, data_dir="/tmp/iwslt15/", prefix='train'):
-    # Load vocabulary
-    en2id, id2en = load_vocab(os.path.join(data_dir, 'vocab.en'))
-    vi2id, id2vi = load_vocab(os.path.join(data_dir, 'vocab.vi'))
+        for l1, l2 in line_pairs:
+            sent1 = parse_line(l1, self.source_word2id)
+            sent2 = parse_line(l2, self.target_word2id)
+            if len(sent1) == len(sent2) == seq_len:
+                yield sent1, sent2
 
-    batch_en, batch_vi = [], []
-    while True:
-        for ids_en, ids_vi in sentence_pair_iterator(
-                os.path.join(data_dir, prefix + '.en'),
-                os.path.join(data_dir, prefix + '.vi'),
-                en2id, vi2id, seq_len
-        ):
-            batch_en.append(ids_en)
-            batch_vi.append(ids_vi)
+    def data_generator(self, batch_size, seq_len, data_type='train'):
+        # Load vocabulary
+        if self.source_id2word is None:
+            self.load_vocab()
 
-            if len(batch_en) == batch_size:
-                yield np.array(batch_en).copy(), np.array(batch_vi).copy()
-                batch_en, batch_vi = [], []
+        # Use the expected set of files
+        prefixes = self.config[data_type]
+        if not isinstance(prefixes, list):
+            prefixes = [prefixes]
+
+        batch_src, batch_tgt = [], []
+        while True:
+            for prefix in prefixes:
+                for ids_src, ids_tgt in self._sentence_pair_iterator(
+                        os.path.join(self.data_dir, prefix + '.' + self.source_lang),
+                        os.path.join(self.data_dir, prefix + '.' + self.target_lang),
+                        seq_len
+                ):
+                    batch_src.append(ids_src)
+                    batch_tgt.append(ids_tgt)
+
+                    if len(batch_src) == batch_size:
+                        yield np.array(batch_src).copy(), np.array(batch_tgt).copy()
+                        batch_src, batch_tgt = [], []
 
 
 def recover_sentence(sent_ids, id2word):

@@ -359,7 +359,6 @@ class Transformer(BaseModelMixin):
             # Make the prediction out of the decoder output.
             logits = tf.layers.dense(dec_out, target_vocab)  # [batch, target_vocab]
             self._output = tf.argmax(logits, axis=-1, output_type=tf.int32)
-            print(logits.shape, self._output.shape)
 
             target_not_pad = tf.cast(tf.not_equal(dec_target, self._pad_id), tf.float32)
             self._accuracy = tf.reduce_sum(
@@ -385,7 +384,7 @@ class Transformer(BaseModelMixin):
 
     def done(self):
         self.writer.close()
-        self.saver.save()  # Final checkpoint.
+        self.save_model()  # Final checkpoint.
 
     def train(self, input_ids, target_ids):
         assert self._is_init, "Call .init() first."
@@ -399,7 +398,7 @@ class Transformer(BaseModelMixin):
             })
         self.writer.add_summary(summary, global_step=self.step)
 
-        if self.step % 1000 == 0:
+        if self.step % 10000 == 0:
             # Save the model checkpoint every 1000 steps.
             self.save_model(step=self.step)
 
@@ -425,7 +424,7 @@ class Transformer(BaseModelMixin):
             })
             # Only update the i-th column in one step.
             pred_ids[:, i] = next_pred[:, i - 1]
-            print(f"i={i}", pred_ids)
+            # print(f"i={i}", pred_ids)
 
         return pred_ids
 
@@ -449,7 +448,7 @@ class Transformer(BaseModelMixin):
 
         smoothie = SmoothingFunction().method4
         bleu_score = corpus_bleu(refs, hypos, smoothing_function=smoothie)
-        return {'bleu_score': bleu_score}
+        return {'bleu_score': bleu_score * 100.}
 
     # ============================= Utils ===============================
 

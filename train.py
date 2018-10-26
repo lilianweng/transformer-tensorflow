@@ -7,20 +7,17 @@ from transformer import *
 
 
 @click.command()
-@click.option('--seq-len', type=int, default=100, show_default=True, help="Input sequence length.")
+@click.option('--seq-len', type=int, default=20, show_default=True, help="Input sequence length.")
 @click.option('--d-model', type=int, default=512, show_default=True, help="d_model")
 @click.option('--n-head', type=int, default=8, show_default=True, help="n_head")
 @click.option('--batch-size', type=int, default=32, show_default=True, help="Batch size")
 @click.option('--max-steps', type=int, default=100000, show_default=True, help="Max train steps.")
-def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
-    data_dir = '/tmp/iwslt15/'
-    DatasetManager('iwslt15').maybe_download_data_files()
-
-    # Load vocabulary first.
-    en2id, id2en = load_vocab(os.path.join(data_dir, 'vocab.en'))
-    vi2id, id2vi = load_vocab(os.path.join(data_dir, 'vocab.vi'))
-    print("English vocabulary size:", len(en2id))
-    print("Vietnamese vocabulary size:", len(vi2id))
+@click.option('--dataset', type=click.Choice(['iwslt15', 'wmt14', 'wmt15']),
+              default='iwslt15', show_default=True, help="Which translation dataset to use.")
+def train(seq_len=20, d_model=512, n_head=8, batch_size=64, max_steps=100000, dataset='iwslt15'):
+    m = DatasetManager(dataset)
+    m.maybe_download_data_files()
+    m.load_vocab()
 
     train_params = dict(
         learning_rate=1e-4,
@@ -42,11 +39,11 @@ def train(seq_len=100, d_model=512, n_head=8, batch_size=64, max_steps=100000):
         model_name=model_name,
         tf_sess_config=tf_sess_config
     )
-    transformer.build_model(id2en, id2vi, PAD_ID, **train_params)
+    transformer.build_model(m.source_id2word, m.target_id2word, PAD_ID, **train_params)
     transformer.print_trainable_variables()
 
-    train_data_iter = data_generator(batch_size, seq_len + 1, data_dir=data_dir, prefix='train')
-    test_data_iter = data_generator(batch_size, seq_len + 1, data_dir=data_dir, prefix='tst2013')
+    train_data_iter = m.data_generator(batch_size, seq_len + 1, data_type='train')
+    test_data_iter = m.data_generator(batch_size, seq_len + 1, data_type='test')
     logger.configure(dir=transformer.log_dir, format_strs=['stdout', 'csv'])
 
     transformer.init()  # step = 0
