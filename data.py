@@ -144,8 +144,8 @@ class DatasetManager:
         '<pad>' to make it to have the exact length `seq_len`.
 
         Args:
-            file1 (str): training data in language 1.
-            file2 (str): training data in language 2. Lines should match lines in `file1`.
+            file1 (str): training data in source language.
+            file2 (str): training data in target language. Lines should match lines in `file1`.
             seq_len (int): max sequence length.
 
         Returns: a tuple of (a list of word id for language 1,
@@ -174,6 +174,21 @@ class DatasetManager:
                 yield sent1, sent2
 
     def data_generator(self, batch_size, seq_len, data_type='train'):
+        """
+        A generator yields a pair of two sentences, (source, target).
+        Each sentence is a list of word ids. Sentences with more than `seq_len` words are
+        discarded. Shorter ones are padded with <pad> symbol at the end to have exact
+        `seq_len` words.
+
+        Args:
+            batch_size (int): size of one mini-batch.
+            seq_len (int): desired sentence length.
+            data_type (str): 'train' or 'test'
+
+        Returns:
+            yields a pair of word ids.
+        """
+        assert data_type in ('train', 'test')
         # Load vocabulary
         if self.source_id2word is None:
             self.load_vocab()
@@ -200,6 +215,8 @@ class DatasetManager:
 
 
 def recover_sentence(sent_ids, id2word):
+    """Convert a list of word ids back to a sentence string.
+    """
     words = list(map(lambda i: id2word[i] if 0 <= i < len(id2word) else '<unk>', sent_ids))
 
     # Then remove tailing <pad>

@@ -34,6 +34,20 @@ class Transformer(BaseModelMixin):
                  num_enc_layers=6, num_dec_layers=6, drop_rate=0.1,
                  ls_epsilon=0.1, use_label_smoothing=True, pos_encoding_type='sinusoid',
                  model_name='transformer', tf_sess_config=None, **kwargs):
+        """
+        Args:
+            num_heads (int): number of heads in multi-head attention unit.
+            d_model (int): dimension of embedding size and the model data flow.
+            d_ff (int): dimension of the feed-forward layer.
+            num_enc_layers (int): number of encoder layers in the encoder.
+            num_dec_layers (int): number of decoder layers in the decoder.
+            drop_rate (float): drop rate in the dropout layer.
+            ls_epsilon (float): epsilon in the label smoothing function.
+            use_label_smoothing (bool): whether use label smoothing for the truth target.
+            pos_encoding_type (str): type of positional encoding, 'sinusoid' or 'embedding'.
+            model_name (str):
+            tf_sess_config (dict): dict config used when creating a tf.session.
+        """
         assert d_model % num_heads == 0
         assert pos_encoding_type in ('sinusoid', 'embedding')
         super().__init__(model_name, tf_sess_config=tf_sess_config)
@@ -85,253 +99,16 @@ class Transformer(BaseModelMixin):
         self._is_init = False
         self.step = 0  # training step.
 
-    def embedding(self, inp, vocab_size, zero_pad=True):
-        """When the `zero_pad` flag is on, """
-        embed_size = self.d_model
-        embed_lookup = tf.get_variable("embed_lookup", [vocab_size, embed_size], tf.float32)
-
-        if zero_pad:
-            assert self._pad_id == 0
-            embed_lookup = tf.concat((tf.zeros(shape=[1, self.d_model]), embed_lookup[1:, :]), 0)
-
-        out = tf.nn.embedding_lookup(embed_lookup, inp)
-        return out
-
-    def _positional_encoding_embedding(self, inp):
-        batch_size, seq_len = inp.shape.as_list()
-
-        with tf.variable_scope('positional_embedding'):
-            # Copy [0, 1, ..., `inp_size`] by `batch_size` times => matrix [batch, seq_len]
-            pos_ind = tf.tile(tf.expand_dims(tf.range(seq_len), 0), [batch_size, 1])
-            return self.embedding(pos_ind, seq_len, zero_pad=False)  # [batch, seq_len, d_model]
-
-    def _positional_encoding_sinusoid(self, inp):
-        """
-        PE(pos, 2i) = sin(pos / 10000^{2i/d_model})
-        PE(pos, 2i+1) = cos(pos / 10000^{2i/d_model})
-        """
-        batch, seq_len = inp.shape.as_list()
-
-        with tf.variable_scope('positional_sinusoid'):
-            # Copy [0, 1, ..., `inp_size`] by `batch_size` times => matrix [batch, seq_len]
-            pos_ind = tf.tile(tf.expand_dims(tf.range(seq_len), 0), [batch, 1])
-
-            # Compute the arguments for sin and cos: pos / 10000^{2i/d_model})
-            # Each dimension is sin/cos wave, as a function of the position.
-            pos_enc = np.array([
-                [pos / np.power(10000., 2. * (i // 2) / self.d_model) for i in range(self.d_model)]
-                for pos in range(seq_len)
-            ])  # [seq_len, d_model]
-
-            # Apply the cosine to even columns and sin to odds.
-            pos_enc[:, 0::2] = np.sin(pos_enc[:, 0::2])  # dim 2i
-            pos_enc[:, 1::2] = np.cos(pos_enc[:, 1::2])  # dim 2i+1
-
-            # Convert to a tensor
-            lookup_table = tf.convert_to_tensor(pos_enc, dtype=tf.float32)  # [seq_len, d_model]
-            if True:
-                lookup_table = tf.concat((tf.zeros(shape=[1, self.d_model]), lookup_table[1:, :]),
-                                         0)
-
-            out = tf.nn.embedding_lookup(lookup_table, pos_ind)  # [batch, seq_len, d_model]
-            return out
-
-    def positional_encoding(self, inp):
-        if self.pos_encoding_type == 'sinusoid':
-            pos_enc = self._positional_encoding_sinusoid(inp)
-        else:
-            pos_enc = self._positional_encoding_embedding(inp)
-        return pos_enc
-
-    def preprocess(self, inp, inp_vocab, scope):
-        # Pre-processing: embedding + positional encoding
-        # Output shape: [batch, seq_len, d_model]
-        with tf.variable_scope(scope):
-            out = self.embedding(inp, inp_vocab, zero_pad=True) + self.positional_encoding(inp)
-            out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
-
-        return out
-
-    def layer_norm(self, inp):
-        return tc.layers.layer_norm(inp, center=True, scale=True)
-
-    def scaled_dot_product_attention(self, Q, K, V, mask=None):
-        """
-        Assuming all the input tensors have three dimension:
-        Args:
-            Q: of shape (h * bs, q_size, d)
-            K: of shape (h * bs, k_size, d)
-            V: of shape (h * bs, k_size, d)
-            mask: of shape (h * bs, q_size, k_size)
-        """
-
-        d = self.d_model // self.h
-        assert d == Q.shape[-1] == K.shape[-1] == V.shape[-1]
-
-        out = tf.matmul(Q, tf.transpose(K, [0, 2, 1]))  # [h*batch, q_size, k_size]
-        out = out / tf.sqrt(tf.cast(d, tf.float32))  # scaled by sqrt(d_k)
-
-        if mask is not None:
-            # masking out (0.0) => setting to -inf.
-            out = tf.multiply(out, mask) + (1.0 - mask) * (-1e10)
-
-        out = tf.nn.softmax(out)  # [h * bs, q_size, k_size]
-        out = tf.layers.dropout(out, training=self._is_training)
-        out = tf.matmul(out, V)  # [h * bs, q_size, d]
-
-        return out
-
-    def multihead_attention(self, query, memory=None, mask=None, scope='attn'):
-        """
-        Args:
-            query (tf.tensor): of shape (batch, q_size, q_embed_size)
-            memory (tf.tensor): of shape (batch, m_size, k_embed_size)
-            mask (tf.tensor): shape (batch, q_size, k_size)
-
-        Returns:h
-            a tensor of shape (bs, q_size, d_model)
-        """
-        if memory is None:
-            memory = query
-
-        with tf.variable_scope(scope):
-            # Linear project to d_model dimension: [batch, q_size/k_size, d_model]
-            Q = tf.layers.dense(query, self.d_model, activation=tf.nn.relu)
-            K = tf.layers.dense(memory, self.d_model, activation=tf.nn.relu)
-            V = tf.layers.dense(memory, self.d_model, activation=tf.nn.relu)
-
-            # Split the matrix to multiple heads and then concatenate to have a larger
-            # batch size: [h*batch, q_size/k_size, d_model/num_heads]
-            Q_split = tf.concat(tf.split(Q, self.h, axis=2), axis=0)
-            K_split = tf.concat(tf.split(K, self.h, axis=2), axis=0)
-            V_split = tf.concat(tf.split(V, self.h, axis=2), axis=0)
-            mask_split = tf.tile(mask, [self.h, 1, 1])
-
-            # Apply scaled dot product attention
-            out = self.scaled_dot_product_attention(Q_split, K_split, V_split, mask=mask_split)
-
-            # Merge the multi-head back to the original shape
-            out = tf.concat(tf.split(out, self.h, axis=0), axis=2)  # [bs, q_size, d_model]
-
-            # The final linear layer and dropout.
-            # out = tf.layers.dense(out, self.d_model)
-            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
-
-        return out
-
-    def feed_forwad(self, inp, scope='ff'):
-        """
-        Position-wise fully connected feed-forward network, applied to each position
-        separately and identically. It can be implemented as (linear + ReLU + linear) or
-        (conv1d + ReLU + conv1d).
-
-        Args:
-            inp (tf.tensor): shape [batch, length, d_model]
-        """
-        out = inp
-        with tf.variable_scope(scope):
-            # out = tf.layers.dense(out, self.d_ff, activation=tf.nn.relu)
-            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
-            # out = tf.layers.dense(out, self.d_model, activation=None)
-
-            out = tf.layers.conv1d(out, filters=self.d_ff, kernel_size=1,
-                                   activation=tf.nn.relu, use_bias=True)
-            out = tf.layers.conv1d(out, filters=self.d_model, kernel_size=1,
-                                   activation=None, use_bias=True)
-
-        return out
-
-    def construct_padding_mask(self, inp):
-        """
-        Args: Original input of word ids, shape [batch, seq_len]
-        Returns: a mask of shape [batch, seq_len, seq_len], where <pad> is 0 and others are 1s.
-        """
-        seq_len = inp.shape.as_list()[1]
-        mask = tf.cast(tf.not_equal(inp, self._pad_id), tf.float32)  # mask '<pad>'
-        mask = tf.tile(tf.expand_dims(mask, 1), [1, seq_len, 1])
-        return mask
-
-    def construct_autoregressive_mask(self, target):
-        """
-        Args: Original target of word ids, shape [batch, seq_len]
-        Returns: a mask of shape [batch, seq_len, seq_len].
-        """
-        batch_size, seq_len = target.shape.as_list()
-
-        tri_matrix = np.zeros((seq_len, seq_len))
-        tri_matrix[np.tril_indices(seq_len)] = 1
-
-        mask = tf.convert_to_tensor(tri_matrix, dtype=tf.float32)
-        masks = tf.tile(tf.expand_dims(mask, 0), [batch_size, 1, 1])  # copies
-        return masks
-
-    def encoder_layer(self, inp, input_mask, scope):
-        """
-        Args:
-            inp: tf.tensor of shape (batch, seq_len, embed_size)
-            input_mask: tf.tensor of shape (batch, seq_len, seq_len)
-        """
-        out = inp
-        with tf.variable_scope(scope):
-            # One multi-head attention + one feed-forword
-            out = self.layer_norm(out + self.multihead_attention(out, mask=input_mask))
-            out = self.layer_norm(out + self.feed_forwad(out))
-        return out
-
-    def encoder(self, inp, input_mask, scope='encoder'):
-        """
-        Args:
-            inp (tf.tensor): shape (batch, seq_len, embed_size)
-            input_mask (tf.tensor): shape (batch, seq_len, seq_len)
-            scope (str):
-
-        Returns:
-        """
-        out = inp  # now, (batch, seq_len, embed_size)
-        with tf.variable_scope(scope):
-            for i in range(self.num_enc_layers):
-                out = self.encoder_layer(out, input_mask, f'enc_{i}')
-        return out
-
-    def decoder_layer(self, target, enc_out, input_mask, target_mask, scope):
-        out = target
-        with tf.variable_scope(scope):
-            out = self.layer_norm(out + self.multihead_attention(
-                out, mask=target_mask, scope='self_attn'))
-            out = self.layer_norm(out + self.multihead_attention(
-                out, memory=enc_out, mask=input_mask))
-            out = self.layer_norm(out + self.feed_forwad(out))
-        return out
-
-    def decoder(self, target, enc_out, input_mask, target_mask, scope='decoder'):
-        out = target
-        with tf.variable_scope(scope):
-            for i in range(self.num_enc_layers):
-                out = self.decoder_layer(out, enc_out, input_mask, target_mask, f'dec_{i}')
-        return out
-
-    def label_smoothing(self, inp):
-        """
-        "... employed label smoothing of epsilon = 0.1 [36]. This hurts perplexity, as the model
-        learns to be more unsure, but improves accuracy and BLEU score."
-
-        Args:
-            inp (tf.tensor): one-hot encoding vectors, [batch, seq_len, vocab_size]
-        """
-        vocab_size = inp.shape.as_list()[-1]
-        smoothed = (1.0 - self.ls_epsilon) * inp + (self.ls_epsilon / vocab_size)
-        return smoothed
-
     def build_model(self, dataset_name, input_id2word, target_id2word,
                     pad_id=PAD_ID, is_training=True, **train_params):
         """
         Args:
-            dataset_name (str)
-            input_id2word (dict)
-            target_id2word (dict)
+            dataset_name (str): name of the training dataset.
+            input_id2word (list): list of source words and the order matches ohe vectors.
+            target_id2word (list): list of target words and the order matches ohe vectors.
             pad_id (int): the id of '<pad>' symbol.
-
-        Returns:
+            is_training (bool)
+            train_params (dict): keys include 'lr', 'batch_size', and 'seq_len'.
         """
         assert input_id2word[pad_id] == '<pad>'
         assert target_id2word[pad_id] == '<pad>'
@@ -414,6 +191,8 @@ class Transformer(BaseModelMixin):
 
     @classmethod
     def load_model(cls, model_name, is_training=False):
+        """Returns a Transformer object, with checkpoint loaded.
+        """
         config_path = os.path.join(REPO_ROOT, 'checkpoints', model_name, 'model.config.json')
         with open(config_path, 'r') as fin:
             cfg = json.load(fin)
@@ -427,7 +206,245 @@ class Transformer(BaseModelMixin):
         model.load_checkpoint()
         return model
 
+    def embedding(self, inp, vocab_size, zero_pad=True):
+        """When the `zero_pad` flag is on, the first row in the embedding lookup table is
+        fixed to be an all-zero vector, corresponding to the '<pad>' symbol."""
+        embed_size = self.d_model
+        embed_lookup = tf.get_variable("embed_lookup", [vocab_size, embed_size], tf.float32)
+
+        if zero_pad:
+            assert self._pad_id == 0
+            embed_lookup = tf.concat((tf.zeros(shape=[1, self.d_model]), embed_lookup[1:, :]), 0)
+
+        out = tf.nn.embedding_lookup(embed_lookup, inp)
+        return out
+
+    def _positional_encoding_embedding(self, inp):
+        batch_size, seq_len = inp.shape.as_list()
+
+        with tf.variable_scope('positional_embedding'):
+            # Copy [0, 1, ..., `inp_size`] by `batch_size` times => matrix [batch, seq_len]
+            pos_ind = tf.tile(tf.expand_dims(tf.range(seq_len), 0), [batch_size, 1])
+            return self.embedding(pos_ind, seq_len, zero_pad=False)  # [batch, seq_len, d_model]
+
+    def _positional_encoding_sinusoid(self, inp):
+        """
+        PE(pos, 2i) = sin(pos / 10000^{2i/d_model})
+        PE(pos, 2i+1) = cos(pos / 10000^{2i/d_model})
+        """
+        batch, seq_len = inp.shape.as_list()
+
+        with tf.variable_scope('positional_sinusoid'):
+            # Copy [0, 1, ..., `inp_size`] by `batch_size` times => matrix [batch, seq_len]
+            pos_ind = tf.tile(tf.expand_dims(tf.range(seq_len), 0), [batch, 1])
+
+            # Compute the arguments for sin and cos: pos / 10000^{2i/d_model})
+            # Each dimension is sin/cos wave, as a function of the position.
+            pos_enc = np.array([
+                [pos / np.power(10000., 2. * (i // 2) / self.d_model) for i in range(self.d_model)]
+                for pos in range(seq_len)
+            ])  # [seq_len, d_model]
+
+            # Apply the cosine to even columns and sin to odds.
+            pos_enc[:, 0::2] = np.sin(pos_enc[:, 0::2])  # dim 2i
+            pos_enc[:, 1::2] = np.cos(pos_enc[:, 1::2])  # dim 2i+1
+
+            # Convert to a tensor
+            lookup_table = tf.convert_to_tensor(pos_enc, dtype=tf.float32)  # [seq_len, d_model]
+            if True:
+                lookup_table = tf.concat((tf.zeros(shape=[1, self.d_model]), lookup_table[1:, :]),
+                                         0)
+
+            out = tf.nn.embedding_lookup(lookup_table, pos_ind)  # [batch, seq_len, d_model]
+            return out
+
+    def positional_encoding(self, inp):
+        if self.pos_encoding_type == 'sinusoid':
+            pos_enc = self._positional_encoding_sinusoid(inp)
+        else:
+            pos_enc = self._positional_encoding_embedding(inp)
+        return pos_enc
+
+    def preprocess(self, inp, inp_vocab, scope):
+        # Pre-processing: embedding + positional encoding
+        # Output shape: [batch, seq_len, d_model]
+        with tf.variable_scope(scope):
+            out = self.embedding(inp, inp_vocab, zero_pad=True) + self.positional_encoding(inp)
+            out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
+
+        return out
+
+    def layer_norm(self, inp):
+        return tc.layers.layer_norm(inp, center=True, scale=True)
+
+    def scaled_dot_product_attention(self, Q, K, V, mask=None):
+        """
+        Args:
+            Q (tf.tensor): of shape (h * batch, q_size, d_model)
+            K (tf.tensor): of shape (h * batch, k_size, d_model)
+            V (tf.tensor): of shape (h * batch, k_size, d_model)
+            mask (tf.tensor): of shape (h * batch, q_size, k_size)
+        """
+
+        d = self.d_model // self.h
+        assert d == Q.shape[-1] == K.shape[-1] == V.shape[-1]
+
+        out = tf.matmul(Q, tf.transpose(K, [0, 2, 1]))  # [h*batch, q_size, k_size]
+        out = out / tf.sqrt(tf.cast(d, tf.float32))  # scaled by sqrt(d_k)
+
+        if mask is not None:
+            # masking out (0.0) => setting to -inf.
+            out = tf.multiply(out, mask) + (1.0 - mask) * (-1e10)
+
+        out = tf.nn.softmax(out)  # [h * batch, q_size, k_size]
+        out = tf.layers.dropout(out, training=self._is_training)
+        out = tf.matmul(out, V)  # [h * batch, q_size, d_model]
+
+        return out
+
+    def multihead_attention(self, query, memory=None, mask=None, scope='attn'):
+        """
+        Args:
+            query (tf.tensor): of shape (batch, q_size, d_model)
+            memory (tf.tensor): of shape (batch, m_size, d_model)
+            mask (tf.tensor): shape (batch, q_size, k_size)
+
+        Returns:h
+            a tensor of shape (bs, q_size, d_model)
+        """
+        if memory is None:
+            memory = query
+
+        with tf.variable_scope(scope):
+            # Linear project to d_model dimension: [batch, q_size/k_size, d_model]
+            Q = tf.layers.dense(query, self.d_model, activation=tf.nn.relu)
+            K = tf.layers.dense(memory, self.d_model, activation=tf.nn.relu)
+            V = tf.layers.dense(memory, self.d_model, activation=tf.nn.relu)
+
+            # Split the matrix to multiple heads and then concatenate to have a larger
+            # batch size: [h*batch, q_size/k_size, d_model/num_heads]
+            Q_split = tf.concat(tf.split(Q, self.h, axis=2), axis=0)
+            K_split = tf.concat(tf.split(K, self.h, axis=2), axis=0)
+            V_split = tf.concat(tf.split(V, self.h, axis=2), axis=0)
+            mask_split = tf.tile(mask, [self.h, 1, 1])
+
+            # Apply scaled dot product attention
+            out = self.scaled_dot_product_attention(Q_split, K_split, V_split, mask=mask_split)
+
+            # Merge the multi-head back to the original shape
+            out = tf.concat(tf.split(out, self.h, axis=0), axis=2)  # [bs, q_size, d_model]
+
+            # The final linear layer and dropout.
+            # out = tf.layers.dense(out, self.d_model)
+            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
+
+        return out
+
+    def feed_forwad(self, inp, scope='ff'):
+        """
+        Position-wise fully connected feed-forward network, applied to each position
+        separately and identically. It can be implemented as (linear + ReLU + linear) or
+        (conv1d + ReLU + conv1d).
+
+        Args:
+            inp (tf.tensor): shape [batch, length, d_model]
+        """
+        out = inp
+        with tf.variable_scope(scope):
+            # out = tf.layers.dense(out, self.d_ff, activation=tf.nn.relu)
+            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
+            # out = tf.layers.dense(out, self.d_model, activation=None)
+
+            # by default, use_bias=True
+            out = tf.layers.conv1d(out, filters=self.d_ff, kernel_size=1, activation=tf.nn.relu)
+            out = tf.layers.conv1d(out, filters=self.d_model, kernel_size=1)
+
+        return out
+
+    def construct_padding_mask(self, inp):
+        """
+        Args: Original input of word ids, shape [batch, seq_len]
+        Returns: a mask of shape [batch, seq_len, seq_len], where <pad> is 0 and others are 1s.
+        """
+        seq_len = inp.shape.as_list()[1]
+        mask = tf.cast(tf.not_equal(inp, self._pad_id), tf.float32)  # mask '<pad>'
+        mask = tf.tile(tf.expand_dims(mask, 1), [1, seq_len, 1])
+        return mask
+
+    def construct_autoregressive_mask(self, target):
+        """
+        Args: Original target of word ids, shape [batch, seq_len]
+        Returns: a mask of shape [batch, seq_len, seq_len].
+        """
+        batch_size, seq_len = target.shape.as_list()
+
+        tri_matrix = np.zeros((seq_len, seq_len))
+        tri_matrix[np.tril_indices(seq_len)] = 1
+
+        mask = tf.convert_to_tensor(tri_matrix, dtype=tf.float32)
+        masks = tf.tile(tf.expand_dims(mask, 0), [batch_size, 1, 1])  # copies
+        return masks
+
+    def encoder_layer(self, inp, input_mask, scope):
+        """
+        Args:
+            inp: tf.tensor of shape (batch, seq_len, embed_size)
+            input_mask: tf.tensor of shape (batch, seq_len, seq_len)
+        """
+        out = inp
+        with tf.variable_scope(scope):
+            # One multi-head attention + one feed-forword
+            out = self.layer_norm(out + self.multihead_attention(out, mask=input_mask))
+            out = self.layer_norm(out + self.feed_forwad(out))
+        return out
+
+    def encoder(self, inp, input_mask, scope='encoder'):
+        """
+        Args:
+            inp (tf.tensor): shape (batch, seq_len, embed_size)
+            input_mask (tf.tensor): shape (batch, seq_len, seq_len)
+            scope (str): name of the variable scope.
+        """
+        out = inp  # now, (batch, seq_len, embed_size)
+        with tf.variable_scope(scope):
+            for i in range(self.num_enc_layers):
+                out = self.encoder_layer(out, input_mask, f'enc_{i}')
+        return out
+
+    def decoder_layer(self, target, enc_out, input_mask, target_mask, scope):
+        out = target
+        with tf.variable_scope(scope):
+            out = self.layer_norm(out + self.multihead_attention(
+                out, mask=target_mask, scope='self_attn'))
+            out = self.layer_norm(out + self.multihead_attention(
+                out, memory=enc_out, mask=input_mask))
+            out = self.layer_norm(out + self.feed_forwad(out))
+        return out
+
+    def decoder(self, target, enc_out, input_mask, target_mask, scope='decoder'):
+        out = target
+        with tf.variable_scope(scope):
+            for i in range(self.num_enc_layers):
+                out = self.decoder_layer(out, enc_out, input_mask, target_mask, f'dec_{i}')
+        return out
+
+    def label_smoothing(self, inp):
+        """
+        From the paper: "... employed label smoothing of epsilon = 0.1. This hurts perplexity,
+        as the model learns to be more unsure, but improves accuracy and BLEU score."
+
+        Args:
+            inp (tf.tensor): one-hot encoding vectors, [batch, seq_len, vocab_size]
+        """
+        vocab_size = inp.shape.as_list()[-1]
+        smoothed = (1.0 - self.ls_epsilon) * inp + (self.ls_epsilon / vocab_size)
+        return smoothed
+
     def init(self):
+        """Call .init() before training starts.
+        - Initialize the variables.
+        - Save the model config into json file.
+        """
         self.sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
         self._is_init = True
         self.step = 0
@@ -439,11 +456,23 @@ class Transformer(BaseModelMixin):
             json.dump(self.config, fout)
 
     def done(self):
+        """Call .done() after training is complete.
+        """
         self.writer.close()
         self.save_checkpoint()  # Final checkpoint.
 
     def train(self, input_ids, target_ids):
-        assert self._is_init, "Call .init() first."
+        """
+        One train step with one mini-batch.
+
+        Args:
+            input_ids (np.array): same shape as raw input placeholder.
+            target_ids (np.array): same shape as raw target placeholder.
+
+        Returns:
+            A dict of some meta information, including 'loss'.
+        """
+        assert self._is_init, "Please call .init() before training starts."
         self.step += 1
         train_loss, train_accu, summary, _ = self.sess.run(
             [self._loss, self._accuracy, self.merged_summary, self.train_op],
@@ -463,6 +492,15 @@ class Transformer(BaseModelMixin):
                 'step': self.step}
 
     def predict(self, input_ids):
+        """
+        Make predict in an autoregressive way.
+
+        Args:
+            input_ids (np.array): same shape as raw input placeholder.
+
+        Returns:
+            a np.array of the same shape as the raw target placeholder.
+        """
         assert list(input_ids.shape) == self.raw_input_ph.shape.as_list()
         batch_size, inp_seq_len = self.raw_input_ph.shape.as_list()
 
@@ -485,6 +523,8 @@ class Transformer(BaseModelMixin):
         return pred_ids
 
     def evaluate(self, input_ids, target_ids):
+        """Make a prediction and compute BLEU score.
+        """
         pred_ids = self.predict(input_ids)
 
         refs = []
