@@ -1,3 +1,10 @@
+"""
+Train a transformer model.
+Author: Lilian Weng (lilian.wengweng@gmail.com)
+        http://lilianweng.github.io/lil-log
+        Oct 2018
+"""
+
 import click
 import time
 
@@ -15,9 +22,9 @@ from transformer import *
 @click.option('--dataset', type=click.Choice(['iwslt15', 'wmt14', 'wmt15']),
               default='iwslt15', show_default=True, help="Which translation dataset to use.")
 def train(seq_len=20, d_model=512, n_head=8, batch_size=64, max_steps=100000, dataset='iwslt15'):
-    m = DatasetManager(dataset)
-    m.maybe_download_data_files()
-    m.load_vocab()
+    dm = DatasetManager(dataset)
+    dm.maybe_download_data_files()
+    dm.load_vocab()
 
     train_params = dict(
         learning_rate=1e-4,
@@ -32,18 +39,18 @@ def train(seq_len=20, d_model=512, n_head=8, batch_size=64, max_steps=100000, da
         inter_op_parallelism_threads=4,
     )
 
-    model_name = f'transformer-seq{seq_len}-d{d_model}-head{n_head}-{int(time.time())}'
+    model_name = f'transformer-{dataset}-seq{seq_len}-d{d_model}-head{n_head}-{int(time.time())}'
     transformer = Transformer(
         num_heads=n_head,
         d_model=d_model,
         model_name=model_name,
         tf_sess_config=tf_sess_config
     )
-    transformer.build_model(m.source_id2word, m.target_id2word, PAD_ID, **train_params)
+    transformer.build_model(dataset, dm.source_id2word, dm.target_id2word, PAD_ID, **train_params)
     transformer.print_trainable_variables()
 
-    train_data_iter = m.data_generator(batch_size, seq_len + 1, data_type='train')
-    test_data_iter = m.data_generator(batch_size, seq_len + 1, data_type='test')
+    train_data_iter = dm.data_generator(batch_size, seq_len + 1, data_type='train')
+    test_data_iter = dm.data_generator(batch_size, seq_len + 1, data_type='test')
     logger.configure(dir=transformer.log_dir, format_strs=['stdout', 'csv'])
 
     transformer.init()  # step = 0

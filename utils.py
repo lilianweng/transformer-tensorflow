@@ -37,23 +37,20 @@ class BaseModelMixin:
             print("\t" + str(v))
         return res
 
-    def save_model(self, step=None):
+    def save_checkpoint(self, step=None):
         print(colorize(" [*] Saving checkpoints...", "green"))
         ckpt_file = os.path.join(self.checkpoint_dir, self.model_name)
         self.saver.save(self.sess, ckpt_file, global_step=step)
 
-    def load_model(self):
+    def load_checkpoint(self):
         print(colorize(" [*] Loading checkpoints...", "green"))
+        ckpt_path = tf.train.latest_checkpoint(self.checkpoint_dir)
+        print(self.checkpoint_dir, ckpt_path)
 
-        ckpt = tf.train.get_checkpoint_state(self.checkpoint_dir)
-        print(self.checkpoint_dir, ckpt)
-        if ckpt and ckpt.model_checkpoint_path:
-            ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
-            print(ckpt_name)
-            fname = os.path.join(self.checkpoint_dir, ckpt_name)
-            print(fname)
-            self.saver.restore(self.sess, fname)
-            print(colorize(" [*] Load SUCCESS: %s" % fname, "green"))
+        if ckpt_path:
+            self._saver = tf.train.import_meta_graph(ckpt_path + '.meta')
+            self.saver.restore(self.sess, ckpt_path)
+            print(colorize(" [*] Load SUCCESS: %s" % ckpt_path, "green"))
             return True
         else:
             print(colorize(" [!] Load FAILED: %s" % self.checkpoint_dir, "red"))

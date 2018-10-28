@@ -1,3 +1,9 @@
+"""
+Author: Lilian Weng (lilian.wengweng@gmail.com)
+        http://lilianweng.github.io/lil-log
+        Oct 2018
+"""
+
 import os
 import sys
 import urllib.parse
@@ -113,7 +119,7 @@ class DatasetManager:
         words.insert(0, '<pad>')
         words = words[:4] + list(set(words[4:]))  # Keep the special characters on top.
         word2id = {word: i for i, word in enumerate(words)}
-        id2word = {i: word for i, word in enumerate(words)}
+        id2word = words
 
         assert id2word[PAD_ID] == '<pad>'
         assert id2word[UNKNOWN_ID] == '<unk>'
@@ -194,7 +200,7 @@ class DatasetManager:
 
 
 def recover_sentence(sent_ids, id2word):
-    words = list(map(lambda i: id2word.get(i, '<unk>'), sent_ids))
+    words = list(map(lambda i: id2word[i] if 0 <= i < len(id2word) else '<unk>', sent_ids))
 
     # Then remove tailing <pad>
     i = len(words) - 1

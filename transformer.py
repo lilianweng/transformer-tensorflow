@@ -6,14 +6,21 @@ Implementations that helped me:
     https://github.com/Kyubyong/transformer/
     https://github.com/tensorflow/tensor2tensor/blob/master/tensor2tensor/models/transformer.py
     http://nlp.seas.harvard.edu/2018/04/01/attention.html
+
+Author: Lilian Weng (lilian.wengweng@gmail.com)
+        http://lilianweng.github.io/lil-log
+        Oct 2018
 """
 import numpy as np
 import tensorflow as tf
+import tensorflow.contrib as tc
+import json
+import os
 
-from utils import BaseModelMixin
+from utils import BaseModelMixin, REPO_ROOT
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 from baselines.common.tf_util import display_var_info
-from data import recover_sentence, START_ID
+from data import recover_sentence, START_ID, PAD_ID
 
 
 class Transformer(BaseModelMixin):
@@ -26,7 +33,7 @@ class Transformer(BaseModelMixin):
     def __init__(self, num_heads=8, d_model=512, d_ff=2048,
                  num_enc_layers=6, num_dec_layers=6, drop_rate=0.1,
                  ls_epsilon=0.1, use_label_smoothing=True, pos_encoding_type='sinusoid',
-                 model_name='transformer', tf_sess_config=None):
+                 model_name='transformer', tf_sess_config=None, **kwargs):
         assert d_model % num_heads == 0
         assert pos_encoding_type in ('sinusoid', 'embedding')
         super().__init__(model_name, tf_sess_config=tf_sess_config)
@@ -47,15 +54,27 @@ class Transformer(BaseModelMixin):
         self.use_label_smoothing = use_label_smoothing
         self.pos_encoding_type = pos_encoding_type
 
-        self._is_init = False
-        self.step = 0  # training step.
+        self.config = dict(
+            num_heads=self.h,
+            d_model=self.d_model,
+            d_ff=self.d_ff,
+            num_enc_layers=self.num_enc_layers,
+            num_dec_layers=self.num_dec_layers,
+            drop_rate=self.drop_rate,
+            ls_epsilon=self.ls_epsilon,
+            use_label_smoothing=self.use_label_smoothing,
+            pos_encoding_type=self.pos_encoding_type,
+            model_name=self.model_name,
+            tf_sess_config=self.tf_sess_config,
+        )
 
-        self.is_training = tf.placeholder(tf.bool, name='is_training')
-        # The following variables will be initialized in build_model().
+        # The following variables are inputs for build_model().
         self._input_id2word = None
         self._target_id2word = None
         self._pad_id = 0
+
         # The following variables will be constructed in build_model().
+        self._is_training = None
         self._raw_input = None
         self._raw_target = None
         self._output = None
@@ -63,7 +82,11 @@ class Transformer(BaseModelMixin):
         self._loss = None
         self._train_op = None
 
+        self._is_init = False
+        self.step = 0  # training step.
+
     def embedding(self, inp, vocab_size, zero_pad=True):
+        """When the `zero_pad` flag is on, """
         embed_size = self.d_model
         embed_lookup = tf.get_variable("embed_lookup", [vocab_size, embed_size], tf.float32)
 
@@ -125,12 +148,12 @@ class Transformer(BaseModelMixin):
         # Output shape: [batch, seq_len, d_model]
         with tf.variable_scope(scope):
             out = self.embedding(inp, inp_vocab, zero_pad=True) + self.positional_encoding(inp)
-            out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
+            out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
 
         return out
 
     def layer_norm(self, inp):
-        return tf.contrib.layers.layer_norm(inp)
+        return tc.layers.layer_norm(inp, center=True, scale=True)
 
     def scaled_dot_product_attention(self, Q, K, V, mask=None):
         """
@@ -153,7 +176,7 @@ class Transformer(BaseModelMixin):
             out = tf.multiply(out, mask) + (1.0 - mask) * (-1e10)
 
         out = tf.nn.softmax(out)  # [h * bs, q_size, k_size]
-        out = tf.layers.dropout(out, training=self.is_training)
+        out = tf.layers.dropout(out, training=self._is_training)
         out = tf.matmul(out, V)  # [h * bs, q_size, d]
 
         return out
@@ -192,7 +215,7 @@ class Transformer(BaseModelMixin):
 
             # The final linear layer and dropout.
             # out = tf.layers.dense(out, self.d_model)
-            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
+            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
 
         return out
 
@@ -208,7 +231,7 @@ class Transformer(BaseModelMixin):
         out = inp
         with tf.variable_scope(scope):
             # out = tf.layers.dense(out, self.d_ff, activation=tf.nn.relu)
-            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self.is_training)
+            # out = tf.layers.dropout(out, rate=self.drop_rate, training=self._is_training)
             # out = tf.layers.dense(out, self.d_model, activation=None)
 
             out = tf.layers.conv1d(out, filters=self.d_ff, kernel_size=1,
@@ -299,9 +322,11 @@ class Transformer(BaseModelMixin):
         smoothed = (1.0 - self.ls_epsilon) * inp + (self.ls_epsilon / vocab_size)
         return smoothed
 
-    def build_model(self, input_id2word, target_id2word, pad_id, **train_params):
+    def build_model(self, dataset_name, input_id2word, target_id2word,
+                    pad_id=PAD_ID, is_training=True, **train_params):
         """
         Args:
+            dataset_name (str)
             input_id2word (dict)
             target_id2word (dict)
             pad_id (int): the id of '<pad>' symbol.
@@ -310,6 +335,14 @@ class Transformer(BaseModelMixin):
         """
         assert input_id2word[pad_id] == '<pad>'
         assert target_id2word[pad_id] == '<pad>'
+
+        self.config.update(dict(
+            dataset=dataset_name,
+            input_id2word=input_id2word,
+            target_id2word=target_id2word,
+            pad_id=pad_id,
+            train_params=train_params,
+        ))
 
         lr = train_params.get('lr', 0.0001)
         batch_size = train_params.get('batch_size', 32)
@@ -323,10 +356,12 @@ class Transformer(BaseModelMixin):
         target_vocab = len(target_id2word)
 
         with tf.variable_scope(self.model_name):
-            self._raw_input = tf.placeholder(tf.int32, shape=[batch_size, seq_len + 1],
-                                             name='raw_input')
-            self._raw_target = tf.placeholder(tf.int32, shape=[batch_size, seq_len + 1],
-                                              name='raw_target')
+            self._is_training = tf.placeholder_with_default(
+                is_training, shape=(), name="is_training")
+            self._raw_input = tf.placeholder(
+                tf.int32, shape=[batch_size, seq_len + 1], name='raw_input')
+            self._raw_target = tf.placeholder(
+                tf.int32, shape=[batch_size, seq_len + 1], name='raw_target')
 
             # Add the offset on the input and target sentences.
 
@@ -377,14 +412,35 @@ class Transformer(BaseModelMixin):
             tf.summary.scalar('accuracy', self._accuracy)
             self.merged_summary = tf.summary.merge_all()
 
+    @classmethod
+    def load_model(cls, model_name, is_training=False):
+        config_path = os.path.join(REPO_ROOT, 'checkpoints', model_name, 'model.config.json')
+        with open(config_path, 'r') as fin:
+            cfg = json.load(fin)
+
+        model = cls(**cfg)
+        model.build_model(cfg['dataset'], cfg['input_id2word'], cfg['target_id2word'],
+                          pad_id=cfg['pad_id'], is_training=is_training,
+                          **cfg['train_params'])
+        model.sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
+
+        model.load_checkpoint()
+        return model
+
     def init(self):
         self.sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
         self._is_init = True
         self.step = 0
 
+        self.save_checkpoint()  # make sure saver is created.
+        # Save the model config into a json.
+        config_path = os.path.join(self.checkpoint_dir, 'model.config.json')
+        with open(config_path, 'w') as fout:
+            json.dump(self.config, fout)
+
     def done(self):
         self.writer.close()
-        self.save_model()  # Final checkpoint.
+        self.save_checkpoint()  # Final checkpoint.
 
     def train(self, input_ids, target_ids):
         assert self._is_init, "Call .init() first."
@@ -394,13 +450,13 @@ class Transformer(BaseModelMixin):
             feed_dict={
                 self.raw_input_ph: input_ids.astype(np.int32),
                 self.raw_target_ph: target_ids.astype(np.int32),
-                self.is_training: True,
+                self.is_training_ph: True,
             })
         self.writer.add_summary(summary, global_step=self.step)
 
         if self.step % 10000 == 0:
             # Save the model checkpoint every 1000 steps.
-            self.save_model(step=self.step)
+            self.save_checkpoint(step=self.step)
 
         return {'train_loss': train_loss,
                 'train_accuracy': train_accu,
@@ -420,7 +476,7 @@ class Transformer(BaseModelMixin):
             next_pred = self.sess.run(self._output, feed_dict={
                 self.raw_input_ph: input_ids,
                 self.raw_target_ph: pred_ids,
-                self.is_training: False,
+                self.is_training_ph: False,
             })
             # Only update the i-th column in one step.
             pred_ids[:, i] = next_pred[:, i - 1]
@@ -468,6 +524,10 @@ class Transformer(BaseModelMixin):
     @property
     def raw_target_ph(self):
         return self._check_variable(self._raw_target, 'target placeholder')
+
+    @property
+    def is_training_ph(self):
+        return self._check_variable(self._is_training, 'is_training placeholder')
 
     @property
     def train_op(self):

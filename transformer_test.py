@@ -1,11 +1,19 @@
+"""
+Author: Lilian Weng (lilian.wengweng@gmail.com)
+        http://lilianweng.github.io/lil-log
+        Oct 2018
+"""
+import os
 import numpy as np
+import shutil
 import tensorflow as tf
+from data import DatasetManager, PAD_ID
 from transformer import Transformer
 
 
 class TransformerTest(tf.test.TestCase):
     def setUp(self):
-        self.t = Transformer()
+        self.t = Transformer(model_name='test')
         self.batch_size = 4
         self.seq_len = 5
         self.raw_input_ph = tf.placeholder(tf.int32, shape=(self.batch_size, self.seq_len))
@@ -15,6 +23,24 @@ class TransformerTest(tf.test.TestCase):
             [1, 2, 3, 4, 0],
             [1, 2, 3, 0, 0],
         ])
+
+    def tearDown(self):
+        shutil.rmtree(self.t.checkpoint_dir)
+        shutil.rmtree(self.t.log_dir)
+        shutil.rmtree(self.t.tb_dir)
+
+    def test_build_and_load_model(self):
+        dm = DatasetManager('iwslt15')
+        dm.load_vocab()
+
+        self.t.build_model('iwslt15', dm.source_id2word, dm.target_id2word, PAD_ID)
+        self.t.init()
+
+        tf.reset_default_graph()
+        model = Transformer.load_model('test')
+        model.print_trainable_variables()
+        out = model.predict(np.zeros(model.raw_input_ph.shape))
+        assert out.shape == model.raw_target_ph.shape
 
     def test_construct_padding_mask(self):
         with self.test_session() as sess:
