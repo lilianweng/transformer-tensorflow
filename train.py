@@ -16,12 +16,13 @@ from transformer import *
 @click.command()
 @click.option('--seq-len', type=int, default=20, show_default=True, help="Input sequence length.")
 @click.option('--d-model', type=int, default=512, show_default=True, help="d_model")
+@click.option('--d-ff', type=int, default=2048, show_default=True, help="d_ff")
 @click.option('--n-head', type=int, default=8, show_default=True, help="n_head")
 @click.option('--batch-size', type=int, default=128, show_default=True, help="Batch size")
 @click.option('--max-steps', type=int, default=300_000, show_default=True, help="Max train steps.")
 @click.option('--dataset', type=click.Choice(['iwslt15', 'wmt14', 'wmt15']),
               default='iwslt15', show_default=True, help="Which translation dataset to use.")
-def train(seq_len, d_model, n_head, batch_size, max_steps, dataset):
+def train(seq_len, d_model, d_ff, n_head, batch_size, max_steps, dataset):
     dm = DatasetManager(dataset)
     dm.maybe_download_data_files()
     dm.load_vocab()
@@ -43,6 +44,7 @@ def train(seq_len, d_model, n_head, batch_size, max_steps, dataset):
     transformer = Transformer(
         num_heads=n_head,
         d_model=d_model,
+        d_ff=d_ff,
         model_name=model_name,
         tf_sess_config=tf_sess_config
     )
