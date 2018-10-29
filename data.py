@@ -59,10 +59,11 @@ class DatasetManager:
                       'newstest2015.en', 'newstest2015.cs',
                       'vocab.1K.en', 'vocab.1K.cs',
                       'vocab.10K.en', 'vocab.10K.cs',
-                      'vocab.20K.en', 'vocab.20K.cs'],
+                      'vocab.20K.en', 'vocab.20K.cs',
+                      'vocab.50K.en', 'vocab.50K.cs'],
             'train': 'train',
             'test': ['newstest2013', 'newstest2014', 'newstest2015'],
-            'vocab': 'vocab.10K',
+            'vocab': 'vocab.50K',
 
         }
     }
@@ -175,7 +176,7 @@ class DatasetManager:
             if len(sent1) == len(sent2) == seq_len:
                 yield sent1, sent2
 
-    def data_generator(self, batch_size, seq_len, data_type='train'):
+    def data_generator(self, batch_size, seq_len, data_type='train', file_prefix=None):
         """
         A generator yields a pair of two sentences, (source, target).
         Each sentence is a list of word ids. Sentences with more than `seq_len` words are
@@ -186,6 +187,7 @@ class DatasetManager:
             batch_size (int): size of one mini-batch.
             seq_len (int): desired sentence length.
             data_type (str): 'train' or 'test'
+            file_prefix (str)
 
         Returns:
             yields a pair of word ids.
@@ -196,9 +198,12 @@ class DatasetManager:
             self.load_vocab()
 
         # Use the expected set of files
-        prefixes = self.config[data_type]
-        if not isinstance(prefixes, list):
-            prefixes = [prefixes]
+        if file_prefix is None:
+            prefixes = self.config[data_type]
+            if not isinstance(prefixes, list):
+                prefixes = [prefixes]
+        else:
+            prefixes = [file_prefix]
 
         batch_src, batch_tgt = [], []
         while True:

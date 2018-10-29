@@ -13,7 +13,8 @@ from nltk.translate.bleu_score import corpus_bleu
 
 @click.command()
 @click.argument('model_name')
-def eval(model_name):
+@click.option('--file-prefix', '-f', type=str, default=None)
+def eval(model_name, file_prefix):
     transformer = Transformer.load_model(model_name, is_training=False)
     transformer.print_trainable_variables()
 
@@ -23,7 +24,8 @@ def eval(model_name):
     dm.maybe_download_data_files()
     data_iter = dm.data_generator(
         cfg['train_params']['batch_size'],
-        cfg['train_params']['seq_len'] + 1, data_type='test'
+        cfg['train_params']['seq_len'] + 1,
+        data_type='test', file_prefix=file_prefix
     )
 
     refs = []
