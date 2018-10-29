@@ -30,9 +30,9 @@ class Transformer(BaseModelMixin):
 
     """
 
-    def __init__(self, num_heads=8, d_model=512, d_ff=2048,
-                 num_enc_layers=6, num_dec_layers=6, drop_rate=0.1,
-                 ls_epsilon=0.1, use_label_smoothing=True, pos_encoding_type='sinusoid',
+    def __init__(self, num_heads=8, d_model=512, d_ff=2048, num_enc_layers=6, num_dec_layers=6,
+                 drop_rate=0.1, warmup_steps=400, pos_encoding_type='sinusoid',
+                 ls_epsilon=0.1, use_label_smoothing=True,
                  model_name='transformer', tf_sess_config=None, **kwargs):
         """
         Args:
@@ -42,9 +42,10 @@ class Transformer(BaseModelMixin):
             num_enc_layers (int): number of encoder layers in the encoder.
             num_dec_layers (int): number of decoder layers in the decoder.
             drop_rate (float): drop rate in the dropout layer.
+            warmup_steps (int)
+            pos_encoding_type (str): type of positional encoding, 'sinusoid' or 'embedding'.
             ls_epsilon (float): epsilon in the label smoothing function.
             use_label_smoothing (bool): whether use label smoothing for the truth target.
-            pos_encoding_type (str): type of positional encoding, 'sinusoid' or 'embedding'.
             model_name (str):
             tf_sess_config (dict): dict config used when creating a tf.session.
         """
@@ -68,6 +69,9 @@ class Transformer(BaseModelMixin):
         self.use_label_smoothing = use_label_smoothing
         self.pos_encoding_type = pos_encoding_type
 
+        # For computing the learning rate
+        self.warmup_steps = warmup_steps
+
         self.config = dict(
             num_heads=self.h,
             d_model=self.d_model,
@@ -75,6 +79,7 @@ class Transformer(BaseModelMixin):
             num_enc_layers=self.num_enc_layers,
             num_dec_layers=self.num_dec_layers,
             drop_rate=self.drop_rate,
+            warmup_steps=self.warmup_steps,
             ls_epsilon=self.ls_epsilon,
             use_label_smoothing=self.use_label_smoothing,
             pos_encoding_type=self.pos_encoding_type,
@@ -88,6 +93,7 @@ class Transformer(BaseModelMixin):
         self._pad_id = 0
 
         # The following variables will be constructed in build_model().
+        self._learning_rate = None
         self._is_training = None
         self._raw_input = None
         self._raw_target = None
@@ -121,7 +127,6 @@ class Transformer(BaseModelMixin):
             train_params=train_params,
         ))
 
-        lr = train_params.get('lr', 0.0001)
         batch_size = train_params.get('batch_size', 32)
         seq_len = train_params.get('seq_len', 20)
 
@@ -133,8 +138,9 @@ class Transformer(BaseModelMixin):
         target_vocab = len(target_id2word)
 
         with tf.variable_scope(self.model_name):
+            self._learning_rate = tf.placeholder(tf.float32, shape=None, name='learning_rate')
             self._is_training = tf.placeholder_with_default(
-                is_training, shape=(), name="is_training")
+                is_training, shape=None, name="is_training")
             self._raw_input = tf.placeholder(
                 tf.int32, shape=[batch_size, seq_len + 1], name='raw_input')
             self._raw_target = tf.placeholder(
@@ -181,7 +187,8 @@ class Transformer(BaseModelMixin):
             self._loss = tf.reduce_mean(
                 tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=dec_target_ohe))
 
-            optim = tf.train.AdamOptimizer(learning_rate=lr)
+            optim = tf.train.AdamOptimizer(learning_rate=self._learning_rate,
+                                           beta1=0.9, beta2=0.98, epsilon=1e-9)
             self._train_op = optim.minimize(self._loss)
 
         with tf.variable_scope(self.model_name + '_summary'):
@@ -474,9 +481,16 @@ class Transformer(BaseModelMixin):
         """
         assert self._is_init, "Please call .init() before training starts."
         self.step += 1
+
+        lr = np.power(self.d_model, -0.5) * min(
+            np.power(self.step, -0.5),
+            self.step * np.power(self.warmup_steps, -1.5)
+        )
+
         train_loss, train_accu, summary, _ = self.sess.run(
             [self._loss, self._accuracy, self.merged_summary, self.train_op],
             feed_dict={
+                self._learning_rate: lr,
                 self.raw_input_ph: input_ids.astype(np.int32),
                 self.raw_target_ph: target_ids.astype(np.int32),
                 self.is_training_ph: True,
@@ -489,6 +503,7 @@ class Transformer(BaseModelMixin):
 
         return {'train_loss': train_loss,
                 'train_accuracy': train_accu,
+                'learning_rate': lr,
                 'step': self.step}
 
     def predict(self, input_ids):
