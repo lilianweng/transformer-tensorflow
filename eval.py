@@ -25,7 +25,7 @@ def eval(model_name, file_prefix):
     data_iter = dm.data_generator(
         cfg['train_params']['batch_size'],
         cfg['train_params']['seq_len'] + 1,
-        data_type='test', file_prefix=file_prefix
+        data_type='test', file_prefix=file_prefix, epoch=1,
     )
 
     refs = []

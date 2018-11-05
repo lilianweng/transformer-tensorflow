@@ -166,6 +166,7 @@ class DatasetManager:
             word_ids += [PAD_ID] * max(0, seq_len - len(word_ids))
             return word_ids
 
+        print(f"Num. lines in '{file1}': {line_count(file1)}")
         assert line_count(file1) == line_count(file2)
         line_pairs = list(zip(open(file1), open(file2)))
         random.shuffle(line_pairs)
@@ -176,7 +177,7 @@ class DatasetManager:
             if len(sent1) == len(sent2) == seq_len:
                 yield sent1, sent2
 
-    def data_generator(self, batch_size, seq_len, data_type='train', file_prefix=None):
+    def data_generator(self, batch_size, seq_len, data_type='train', file_prefix=None, epoch=None):
         """
         A generator yields a pair of two sentences, (source, target).
         Each sentence is a list of word ids. Sentences with more than `seq_len` words are
@@ -188,6 +189,7 @@ class DatasetManager:
             seq_len (int): desired sentence length.
             data_type (str): 'train' or 'test'
             file_prefix (str)
+            epoch (int): if None, repeat the dataset infinitely.
 
         Returns:
             yields a pair of word ids.
@@ -206,7 +208,8 @@ class DatasetManager:
             prefixes = [file_prefix]
 
         batch_src, batch_tgt = [], []
-        while True:
+        ep = 0
+        while epoch is None or ep < epoch:
             for prefix in prefixes:
                 for ids_src, ids_tgt in self._sentence_pair_iterator(
                         os.path.join(self.data_dir, prefix + '.' + self.source_lang),
@@ -219,6 +222,8 @@ class DatasetManager:
                     if len(batch_src) == batch_size:
                         yield np.array(batch_src).copy(), np.array(batch_tgt).copy()
                         batch_src, batch_tgt = [], []
+
+            ep += 1
 
 
 def recover_sentence(sent_ids, id2word):
