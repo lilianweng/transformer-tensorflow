@@ -5,7 +5,6 @@ from baselines.common.console_util import colorize
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__)))
 
-
 class BaseModelMixin:
     """Abstract object representing an Reader model.
     Code borrowed from: https://github.com/devsisters/DQN-tensorflow/blob/master/dqn/base.py

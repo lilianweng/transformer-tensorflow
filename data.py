@@ -225,6 +225,10 @@ class DatasetManager:
 
             ep += 1
 
+        # leftover
+        if len(batch_src) > 0:
+            yield np.array(batch_src).copy(), np.array(batch_tgt).copy()
+
 
 def recover_sentence(sent_ids, id2word):
     """Convert a list of word ids back to a sentence string.
