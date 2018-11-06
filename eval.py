@@ -6,6 +6,7 @@ Author: Lilian Weng (lilian.wengweng@gmail.com)
         Oct 2018
 """
 import click
+import numpy as np
 from data import DatasetManager, recover_sentence
 from transformer import Transformer
 from nltk.translate.bleu_score import corpus_bleu
@@ -43,6 +44,12 @@ def eval(model_name, file_prefix):
         num_sentences=len(hypos),
         bleu_score=bleu_score * 100.,
     )
+
+    # Sample a few translated sentences.
+    indices = np.random.choice(list(range(len(hypos))), size=10, replace=False)
+    for i in indices:
+        print(f"Source: '{refs[i][0]}' ==> Target: '{hypos[i]}'.")
+
     print(results)
 
 
