@@ -19,7 +19,6 @@ import os
 
 from utils import BaseModelMixin, REPO_ROOT
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
-from baselines.common.tf_util import display_var_info
 from data import recover_sentence, START_ID, PAD_ID
 
 
@@ -208,8 +207,7 @@ class Transformer(BaseModelMixin):
         model.build_model(cfg['dataset'], cfg['input_id2word'], cfg['target_id2word'],
                           pad_id=cfg['pad_id'], is_training=is_training,
                           **cfg['train_params'])
-        model.sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
-
+        # model.sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
         model.load_checkpoint()
         return model
 
@@ -217,7 +215,8 @@ class Transformer(BaseModelMixin):
         """When the `zero_pad` flag is on, the first row in the embedding lookup table is
         fixed to be an all-zero vector, corresponding to the '<pad>' symbol."""
         embed_size = self.d_model
-        embed_lookup = tf.get_variable("embed_lookup", [vocab_size, embed_size], tf.float32)
+        embed_lookup = tf.get_variable("embed_lookup", [vocab_size, embed_size], tf.float32,
+                                       initializer=tf.contrib.layers.xavier_initializer())
 
         if zero_pad:
             assert self._pad_id == 0
@@ -562,10 +561,6 @@ class Transformer(BaseModelMixin):
         return {'bleu_score': bleu_score * 100.}
 
     # ============================= Utils ===============================
-
-    def print_trainable_variables(self):
-        t_vars = tf.trainable_variables(scope=self.model_name)
-        display_var_info(t_vars)
 
     def _check_variable(self, v, name):
         if v is None:

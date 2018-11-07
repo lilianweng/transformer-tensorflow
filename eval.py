@@ -33,7 +33,6 @@ def eval(model_name, file_prefix):
     hypos = []
     for source_ids, target_ids in data_iter:
         valid_size = len(source_ids)
-        print(source_ids.shape, target_ids.shape)
 
         if valid_size < batch_size:
             source_ids = np.array(list(source_ids) + [[PAD_ID] * seq_len] * (batch_size - source_ids.shape[0]))

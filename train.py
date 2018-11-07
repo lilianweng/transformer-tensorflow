@@ -11,6 +11,7 @@ import time
 from baselines import logger
 from data import *
 from transformer import *
+from utils import print_trainable_variables
 
 
 @click.command()
@@ -49,7 +50,7 @@ def train(seq_len, d_model, d_ff, n_head, batch_size, max_steps, dataset):
         tf_sess_config=tf_sess_config
     )
     transformer.build_model(dataset, dm.source_id2word, dm.target_id2word, PAD_ID, **train_params)
-    transformer.print_trainable_variables()
+    print_trainable_variables()
 
     train_data_iter = dm.data_generator(batch_size, seq_len + 1, data_type='train')
     test_data_iter = dm.data_generator(batch_size, seq_len + 1, data_type='test')

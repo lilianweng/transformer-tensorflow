@@ -3,17 +3,19 @@ Author: Lilian Weng (lilian.wengweng@gmail.com)
         http://lilianweng.github.io/lil-log
         Oct 2018
 """
-import os
-import numpy as np
 import shutil
+import numpy as np
 import tensorflow as tf
+
 from data import DatasetManager, PAD_ID
 from transformer import Transformer
+from utils import print_trainable_variables
 
 
 class TransformerTest(tf.test.TestCase):
     def setUp(self):
-        self.t = Transformer(model_name='test')
+        self.t = Transformer(model_name='test', num_heads=4, d_model=64, d_ff=128,
+                             num_enc_layers=2, num_dec_layers=2)
         self.batch_size = 4
         self.seq_len = 5
         self.raw_input_ph = tf.placeholder(tf.int32, shape=(self.batch_size, self.seq_len))
@@ -34,13 +36,22 @@ class TransformerTest(tf.test.TestCase):
         dm.load_vocab()
 
         self.t.build_model('iwslt15', dm.source_id2word, dm.target_id2word, PAD_ID)
+        print_trainable_variables()
         self.t.init()
+        value_dict = self.t.get_variable_values()
 
         tf.reset_default_graph()
         model = Transformer.load_model('test')
-        model.print_trainable_variables()
         out = model.predict(np.zeros(model.raw_input_ph.shape))
         assert out.shape == model.raw_target_ph.shape
+
+        value_dict2 = model.get_variable_values()
+        for k in value_dict2:
+            print("\n*************************************")
+            print(k)
+            print(value_dict[k])
+            print(value_dict2[k])
+            assert np.allclose(value_dict[k], value_dict2[k])
 
     def test_construct_padding_mask(self):
         with self.test_session() as sess:
