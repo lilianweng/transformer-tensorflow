@@ -14,6 +14,14 @@ Implementations that helped me:
 * http://nlp.seas.harvard.edu/2018/04/01/attention.html
 
 
+### Setup
+
+```bash
+$ git clone https://github.com/lilianweng/transformer-tensorflow.git
+$ cd transformer-tensorflow
+$ pip install -r requirements.txt
+```
+
 ### Train a Model
 
 ```bash
@@ -44,7 +52,7 @@ $ python train.py --dataset wmt14
 
 Let's say, the model is saved in folder `transformer-wmt14-seq20-d512-head8-1541573730` in `checkpoints` folder.
 
-```
+```bash
 $ python eval.py transformer-wmt14-seq20-d512-head8-1541573730
 ```
 With the default config, this implementation gets BLEU ~ 20 on wmt14 test set.
