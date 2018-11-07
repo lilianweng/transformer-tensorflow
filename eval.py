@@ -21,11 +21,12 @@ def eval(model_name, file_prefix):
     cfg = transformer.config
     batch_size = cfg['train_params']['batch_size']
     seq_len = cfg['train_params']['seq_len'] + 1
+    print(f'batch_size:{batch_size} seq_len:{seq_len}')
 
     dm = DatasetManager(cfg['dataset'])
     dm.maybe_download_data_files()
-    data_iter = dm.data_generator(
-        batch_size, seq_len, data_type='test', file_prefix=file_prefix, epoch=1)
+    data_iter = dm.data_generator(batch_size, seq_len, data_type='test',
+                                  file_prefix=file_prefix, epoch=1)
 
     refs = []
     hypos = []
