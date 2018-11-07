@@ -14,7 +14,7 @@ Implementations that helped me:
 * http://nlp.seas.harvard.edu/2018/04/01/attention.html
 
 
-Train a model:
+### Train a Model
 
 ```bash
 # Check the help message:
@@ -40,14 +40,17 @@ Options:
 $ python train.py --dataset wmt14
 ```
 
-Evaluate a trained model:
+### Evaluate a Trained Model
+
+Let's say, the model is saved in folder `transformer-wmt14-seq20-d512-head8-1541573730` in `checkpoints` folder.
+
 ```
-# Let's say, the model is saved in folder `transformer-wmt14-seq20-d512-head8-1541573730` in checkpoints folder.
-python eval.py transformer-wmt14-seq20-d512-head8-1541573730
+$ python eval.py transformer-wmt14-seq20-d512-head8-1541573730
 ```
 With the default config, this implementation gets BLEU ~ 20 on wmt14 test set.
 
 
+### Implementation Notes
 \[WIP\] A couple of tricking points in the implementation.
 
 * How to construct the mask correctly?
