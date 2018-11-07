@@ -17,10 +17,8 @@ from nltk.translate.bleu_score import corpus_bleu
 @click.option('--file-prefix', '-f', type=str, default=None)
 def eval(model_name, file_prefix):
     transformer = Transformer.load_model(model_name, is_training=False)
-    transformer.print_trainable_variables()
 
     cfg = transformer.config
-
     batch_size = cfg['train_params']['batch_size']
     seq_len = cfg['train_params']['seq_len'] + 1
 
