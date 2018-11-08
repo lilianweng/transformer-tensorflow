@@ -15,11 +15,11 @@ from utils import print_trainable_variables
 
 
 @click.command()
-@click.option('--seq-len', type=int, default=20, show_default=True, help="Input sequence length.")
+@click.option('--seq-len', type=int, default=10, show_default=True, help="Input sequence length.")
 @click.option('--d-model', type=int, default=512, show_default=True, help="d_model")
 @click.option('--d-ff', type=int, default=2048, show_default=True, help="d_ff")
 @click.option('--n-head', type=int, default=8, show_default=True, help="n_head")
-@click.option('--batch-size', type=int, default=128, show_default=True, help="Batch size")
+@click.option('--batch-size', type=int, default=256, show_default=True, help="Batch size")
 @click.option('--max-steps', type=int, default=300_000, show_default=True, help="Max train steps.")
 @click.option('--dataset', type=click.Choice(['iwslt15', 'wmt14', 'wmt15']),
               default='iwslt15', show_default=True, help="Which translation dataset to use.")
