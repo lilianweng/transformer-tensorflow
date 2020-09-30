@@ -430,7 +430,7 @@ class Transformer(BaseModelMixin):
     def decoder(self, target, enc_out, input_mask, target_mask, scope='decoder'):
         out = target
         with tf.variable_scope(scope):
-            for i in range(self.num_enc_layers):
+            for i in range(self.num_dec_layers):
                 out = self.decoder_layer(out, enc_out, input_mask, target_mask, f'dec_{i}')
         return out
 
